@@ -787,8 +787,9 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
       <div class="hint" id="s_tmdbkey_hint">当前：—</div>
       <label style="margin-top:12px">API 域名</label>
       <input type="text" id="s_tmdbhost" placeholder="https://api.tmdb.org">
-      <div class="hint">国内网络 <code>api.themoviedb.org</code> 常被污染，默认走 <code>api.tmdb.org</code>；
-        图片走 <code>image.tmdb.org</code>，一般正常。仍不通时用下面的「手动 hosts」把域名直接指到 IP。</div>
+      <div class="hint"><code>api.tmdb.org</code> 与 <code>image.tmdb.org</code> 一般都通，默认就用它，不用配 hosts。
+        <br>只有改成 <code>api.themoviedb.org</code> 时国内多半解析到假 IP（典型 DNS 污染）——那种情况
+        在下面的「手动 hosts」里把 <code>api.themoviedb.org</code> 指到一个真实 CloudFront IP 就能救回来。</div>
       <div class="hint" id="s_cvcount">已缓存封面：—</div>
       <div class="row" style="margin-top:14px">
         <button class="ghost" onclick="testTMDB()" id="btnTestTmdb">测试 TMDB</button>
@@ -823,12 +824,14 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
     <div class="card" style="margin-top:14px">
       <h2>手动 hosts（域名 → IP）</h2>
       <div class="hint" style="margin-bottom:10px">
-        DNS 被污染时用：填「域名 IP」，程序内直接连这个 IP，<strong>不改系统 hosts、不用重启</strong>。
+        填「域名 IP」，程序内直接连这个 IP，<strong>不改系统 hosts、不用重启</strong>。
         TLS 证书仍按域名校验，所以填真 IP 才有用。局域网地址与代理规则不受影响。
+        <br>只对 <strong>DNS 污染</strong>有效（系统把域名解到假 IP）。如果是按域名拦 TLS
+        （TCP 通、握手被 RST），加 hosts 没用，得去「代理」里配代理——用下面的「测试」能分清这两种。
       </div>
       <label>覆盖表（一行一条，格式：域名 IP）</label>
       <textarea id="s_hosts" style="min-height:84px"
-                placeholder="api.themoviedb.org 18.164.52.121&#10;image.tmdb.org 18.164.52.121"></textarea>
+                placeholder="api.themoviedb.org 108.138.246.6&#10;# 井号开头是注释"></textarea>
       <div class="hint" id="s_hosts_hint">当前生效：—</div>
       <div class="row" style="margin-top:12px">
         <input type="text" id="s_host_test" placeholder="要测的域名，如 api.themoviedb.org" style="flex:1">
@@ -2782,6 +2785,9 @@ async function testBangumi(){
 
 // 测试一个域名：同时显示系统 DNS 给出的地址与覆盖后的连通结果，
 // 这样「DNS 有没有被污染、覆盖有没有救回来」一眼能看出来。
+//
+// 后端会真的做一次 TLS 握手（不只是 TCP），所以这里能分出第三种结局：
+// TCP 通了但 TLS 被 RST —— 那是按域名拦截，改 IP 没用，只能走代理。
 async function testHost(){
   const btn = $('btnTestHost'), box = $('hostResult');
   const host = ($('s_host_test') ? $('s_host_test').value : '').trim();
@@ -2790,14 +2796,24 @@ async function testHost(){
   try{
     const d = await (await apiPost('/api/settings/hosts/test', {host: host})).json();
     const dns = (d.dns||[]).length ? d.dns.join(', ') : '（解析失败）';
+    const tail = '<br><span style="color:#999">系统 DNS：'+esc(dns)+
+      (d.override ? ('　覆盖：'+esc(d.override)) : '　覆盖：无（走 DNS）')+'</span>';
     if(d.ok){
-      box.innerHTML = '<span class="ok">✓ '+esc(host)+' 连通 '+esc(d.connected||'')+
-        '（'+d.latency_ms+' ms）</span><br><span style="color:#999">系统 DNS：'+esc(dns)+
-        (d.override ? ('　覆盖：'+esc(d.override)) : '　覆盖：无（走 DNS）')+'</span>';
+      const extra = d.tls_info ? '，TLS '+esc(d.tls_info) : '';
+      box.innerHTML = '<span class="ok">✓ '+esc(host)+' 可用，连的是 '+esc(d.connected||'')+
+        '（'+d.latency_ms+' ms'+extra+'）</span>'+tail;
+    } else if(d.verdict === 'tls_failed'){
+      box.innerHTML = '<span class="err">✗ '+esc(host)+'：TCP 能连上，但 TLS 握手被中断</span><br>'+
+        '<span style="color:#c00">这条链路是按<strong>域名</strong>拦的（SNI 阻断），'+
+        '换 IP、加 hosts 都没用——请在「代理」里配一个能出去的代理，'+
+        '不要在 hosts 上浪费时间。</span>'+tail;
+    } else if(d.verdict === 'tcp_failed_ovrd'){
+      box.innerHTML = '<span class="err">✗ '+esc(host)+'：连不上你指定的这个 IP</span><br>'+
+        '<span style="color:#c00">这条 IP 是手动 hosts 填的，先确认它还有效（IP 会变）。</span>'+
+        tail+'<br><span style="color:#999" class="mono">'+esc(d.error||'')+'</span>';
     } else {
-      box.innerHTML = '<span class="err">✗ '+esc(host)+'：'+esc(d.error||'连不上')+'</span><br>'+
-        '<span style="color:#999">系统 DNS：'+esc(dns)+
-        (d.override ? ('　覆盖：'+esc(d.override)) : '　覆盖：无（可在上面加一条再测）')+'</span>';
+      box.innerHTML = '<span class="err">✗ '+esc(host)+'：连不上（'+(d.latency_ms||0)+' ms）</span>'+
+        tail+'<br><span style="color:#999" class="mono">'+esc(d.error||'')+'</span>';
     }
   }catch(e){ box.innerHTML = '<span class="err">出错：'+esc(String(e))+'</span>'; }
   finally{ btn.disabled=false; btn.textContent='测试解析与连通'; }
@@ -2934,10 +2950,10 @@ async function saveSettings(){
       // 源数据：bgm.tv
       bangumi_api: $('s_bgm_api') ? $('s_bgm_api').value.trim() : '',
       bangumi_token: $('s_bgm_token') ? $('s_bgm_token').value.trim() : '',
-      // 源数据：手动 hosts（一行一条「域名 IP」）
+      // 源数据：手动 hosts（一行一条「域名 IP」，井号开头当注释）
       host_overrides: ($('s_hosts') ? $('s_hosts').value.split('\n') : []).map(line=>{
         const s = line.trim();
-        if(!s) return null;
+        if(!s || s.startsWith('#')) return null;
         // 空格或制表符都当分隔符；也容错「域名=IP」的写法
         const m = s.match(/^(\S+?)\s*[=\s]\s*(\S+)$/);
         return m ? {host: m[1].trim(), ip: m[2].trim()} : null;

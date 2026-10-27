@@ -219,7 +219,7 @@ sudo systemctl enable --now anime-go
 "bangumi_token": "",
 "cover_source": "mikan",
 "host_overrides": [
-  {"host": "api.bgm.tv", "ip": "203.0.113.10"}
+  {"host": "api.themoviedb.org", "ip": "108.138.246.6"}
 ]
 ```
 
@@ -227,15 +227,20 @@ sudo systemctl enable --now anime-go
   查不到再退回 mikan。前两者失败都会自动互相兜底，不会因为抓不到封面就不推送。
 - `bangumi_api` / `bangumi_token`：bgm.tv 的 API 地址与可选 Access Token。**留空不填 Token 也能用**
   （匿名限流更紧一点）；TMDB 与 bgm 是并列的两个来源，不是二选一。
-- `host_overrides`：程序内的 hosts 覆盖，用来绕开 DNS 污染——只影响本进程发出的请求，
+- `host_overrides`：程序内的 hosts 覆盖，用来绕开 **DNS 污染**——只影响本进程发出的请求，
   不写 `/etc/hosts`、不改系统解析。设置页里有「测试」按钮，会同时显示系统 DNS 解析结果、
   你配的覆盖 IP、实际连上的地址和耗时。修改后立即生效，无需重启。
-- 注意：bgm.tv 与 TMDB 在国内常被 DNS 污染。**先点「测试」看现象再决定怎么修**：
-  - 系统 DNS 给的 IP 明显不对，换成真实 IP 能正常完成 TLS 握手与响应 → 用「手动 hosts」指到那个 IP；
-  - 换成真实 IP 后 TCP 能连上但连接被立刻重置（`connection reset by peer`），或者根本连不通 →
-    这是链路上有拦截，改 IP 没用，得在「代理」里开一个能出去的代理（实测国内宽带访问
-    `api.bgm.tv` 就是这一种）。
-  两条路都只影响本程序，不动系统配置。
+- 关键区别：**TMDB 是被 DNS 污染，bgm.tv 是被按域名拦 TLS，两者的修法完全不同。** 先点「测试」看现象：
+
+  | 现象 | 是什么 | 怎么修 |
+  |---|---|---|
+  | 系统 DNS 给的 IP 明显不对（如 `api.themoviedb.org` 解析到阿里云 / Twitter 网段），换成真实 IP 后 TLS 与响应都正常 | DNS 污染 | 用「手动 hosts」把域名指到真实 IP |
+  | TCP 三次握手成功，但 TLS 握手被中断（`connection reset by peer` / `handshake failure`） | 按域名（SNI）拦截 | 改 IP 没用，去「代理」配一个能出去的代理 |
+
+  实测（OrangePi Zero 2W，国内宽带）：`api.tmdb.org` 与 `image.tmdb.org` 解析正常、可直接用；
+  `api.themoviedb.org` 被污染成 `47.88.58.234` 这类 IP，用 hosts 指到 CloudFront 真 IP 后立刻可用；
+  `api.bgm.tv` 是 SNI 拦截，同一 IP 换 SNI 测 `example.com` 通、测 `api.bgm.tv` 秒断，只能走代理。
+- 两条路都只影响本程序，不动系统配置。
 
 
 ## Web UI

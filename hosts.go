@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sort"
@@ -167,25 +168,46 @@ func dialWithOverrides(d *net.Dialer, ctx context.Context, network, addr string)
 //
 // 同时给出系统 DNS 的答案与覆盖后的实际连接结果：
 // 用户因此能一眼看出「DNS 被污染成哪个 IP」以及「覆盖有没有救回来」。
+//
+// 为什么要分 TCPOK / TLSOK 两个字段、而不是一个 OK：
+// 「TCP 能连上」和「这个域名能用」是两件事。SNI 阻断（实测 api.bgm.tv 就是）
+// 的表现是三次握手成功、TLS ClientHello 发出去之后被 RST，
+// 只看 TCP 会把这种情况报成「连通正常」，把人往「那 hosts 应该没用吧」上带。
 type HostTestResult struct {
-	OK        bool     `json:"ok"`
+	OK        bool     `json:"ok"` // 真正可用：http 要求 TCP，https 还要求 TLS 握手完成
 	Host      string   `json:"host"`
 	Port      int      `json:"port"`
 	DNS       []string `json:"dns"`      // 系统 DNS 给出的地址
 	Override  string   `json:"override"` // 当前生效的覆盖（空 = 没配）
 	Connected string   `json:"connected"`
+	TCPOK     bool     `json:"tcp_ok"`
+	TLSOK     bool     `json:"tls_ok"`
+	TLSInfo   string   `json:"tls_info"` // 协议版本 / 套件 / 证书 CN
 	LatencyMS int64    `json:"latency_ms"`
 	Error     string   `json:"error"`
+	Verdict   string   `json:"verdict"` // 机器可读的结论，见下面几个常量
 }
+
+// TestHost 的结论码。前端按它选措辞，不要在 JS 里拼字符串判断。
+const (
+	verdictOK            = "ok"              // 完全可用
+	verdictTCPFailed     = "tcp_failed"      // TCP 都连不上
+	verdictTCPFailOvride = "tcp_failed_ovrd" // 连不上，且这条是 hosts 指过去的 IP
+	verdictTLSFailed     = "tls_failed"      // TCP 通、TLS 被中断（SNI 阻断），改 IP 没用
+)
 
 // TestHost 验证「这个域名能不能连通」，并报告覆盖前后的差异。
 //
 // 不保存任何东西，也不碰全局 Transport：设置页允许「先测再存」。
+//
+// https 会真的做一次 TLS 握手（带正确的 SNI、走标准库的证书校验），
+// 这样「TCP 通但 TLS 被 RST」的 SNI 阻断才能和「hosts 没配对」区分开。
 func TestHost(host string, port int, scheme string) HostTestResult {
 	res := HostTestResult{Host: host, Port: port}
 	host = strings.Trim(strings.TrimSpace(host), "[]")
 	if host == "" {
 		res.Error = "请先填写域名"
+		res.Verdict = verdictTCPFailed
 		return res
 	}
 	if port <= 0 {
@@ -203,22 +225,58 @@ func TestHost(host string, port int, scheme string) HostTestResult {
 
 	// 2) 覆盖后的目标
 	target := host
+	viaOverride := false
 	if ip, ok := overrideFor(host); ok {
 		res.Override = ip
 		target = ip
+		viaOverride = true
 	}
 	addr := net.JoinHostPort(strings.Trim(target, "[]"), fmt.Sprint(port))
 
 	start := time.Now()
 	conn, err := (&net.Dialer{Timeout: 8 * time.Second}).Dial("tcp", addr)
-	res.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
+		res.LatencyMS = time.Since(start).Milliseconds()
 		res.Error = err.Error()
+		if viaOverride {
+			res.Verdict = verdictTCPFailOvride
+		} else {
+			res.Verdict = verdictTCPFailed
+		}
 		return res
 	}
-	conn.Close()
-	res.OK = true
+	res.TCPOK = true
 	res.Connected = addr
+
+	if scheme == "http" {
+		conn.Close()
+		res.LatencyMS = time.Since(start).Milliseconds()
+		res.OK = true
+		res.Verdict = verdictOK
+		return res
+	}
+
+	// 3) TLS 握手：SNI 用**用户填的域名**，不是拨号目标 IP。
+	//    这正是「覆盖只换拨号目标、不影响证书校验」的实现前提。
+	tlsConn := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	_ = tlsConn.SetDeadline(time.Now().Add(8 * time.Second))
+	herr := tlsConn.Handshake()
+	res.LatencyMS = time.Since(start).Milliseconds()
+	if herr != nil {
+		tlsConn.Close()
+		res.Error = herr.Error()
+		res.Verdict = verdictTLSFailed
+		return res
+	}
+	st := tlsConn.ConnectionState()
+	res.TLSOK = true
+	res.TLSInfo = tls.VersionName(st.Version)
+	if len(st.PeerCertificates) > 0 {
+		res.TLSInfo += " · " + st.PeerCertificates[0].Subject.CommonName
+	}
+	tlsConn.Close()
+	res.OK = true
+	res.Verdict = verdictOK
 	return res
 }
 

@@ -920,9 +920,27 @@ func (s *server) handleHostTest(w http.ResponseWriter, r *http.Request) {
 }
 
 // hostTestText 把 hosts 测试结果说成人话。
+//
+// 三种失败要分开说，因为修法完全不同：
+//   - TCP 连不上（超时）      → 这个 IP 根本不通，换一个；
+//   - TCP 秒断（refused）     → 这个 IP 上没有服务，hosts 填错了；
+//   - TCP 通了但 TLS 被中断   → 链路按域名做了拦截，改 IP 没用，只能走代理。
 func hostTestText(r HostTestResult) string {
-	if r.Error != "" {
-		return "失败：" + r.Error
+	switch r.Verdict {
+	case verdictOK:
+		if r.TLSInfo != "" {
+			return fmt.Sprintf("连通 %s（%d ms，TLS %s）", r.Connected, r.LatencyMS, r.TLSInfo)
+		}
+		return fmt.Sprintf("连通 %s（%d ms）", r.Connected, r.LatencyMS)
+	case verdictTLSFailed:
+		return fmt.Sprintf("TCP 已连上 %s，但 TLS 握手被中断（%d ms）：%s。"+
+			"这是按域名做的链路拦截，换 IP / 改 hosts 都没用，需要在「代理」里配一个能出去的代理",
+			r.Connected, r.LatencyMS, r.Error)
+	case verdictTCPFailOvride:
+		return fmt.Sprintf("连不上 %s:%d（%d ms）：%s。这条 IP 是手动 hosts 指定的，先确认它是否还能用",
+			r.Override, r.Port, r.LatencyMS, r.Error)
+	default:
+		// 连主机名都不带会让人看不懂是哪一条测试失败（日志里连着好几行）。
+		return fmt.Sprintf("连不上 %s:%d（%d ms）：%s", r.Host, r.Port, r.LatencyMS, r.Error)
 	}
-	return fmt.Sprintf("连通 %s（%d ms）", r.Connected, r.LatencyMS)
 }
