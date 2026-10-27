@@ -354,9 +354,10 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	//
 	// 不能再用 tmdbKeyOf 把关：封面默认走 mikan，抓 mikan 封面不需要 TMDB key。
 	// 否则没配 key 的用户订阅后永远没有封面（只有手动点「重新抓取」才有）。
-	if coverFetchable(s.app) {
-		s.app.FetchCoverAsync(sub.ID)
-	}
+	//
+	// ⚠ 顺序：一定放在首推**之后**（见函数末尾）。封面是纯装饰，
+	// 抓取失败（mikan 抖动、IPv6 被 reset、代理挂了）不该让首推排在它后面；
+	// FetchCoverAsync 现在全程不持锁，也不可能卡住推送。
 
 	// 首次订阅：立即抓一次 RSS
 	//
@@ -422,6 +423,11 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		default:
 			msg += "，" + epWord + "未推送（" + first.Reason + "）"
 		}
+	}
+
+	// 首推已经结束，才轮到封面：慢/失败都只影响那张图。
+	if coverFetchable(s.app) {
+		s.app.FetchCoverAsync(sub.ID)
 	}
 
 	writeJSON(w, 200, map[string]any{"ok": true, "message": msg, "id": id})

@@ -619,29 +619,76 @@ func firstAirYear(d string) string {
 	return ""
 }
 
-// FetchCoverAsync 后台抓封面（不阻塞订阅/保存流程），完成后回写配置并记日志。
+// FetchCoverAsync 后台抓封面。**封面与下载完全解耦**：抓不到、抓得慢、
+// 甚至整个站点被墙，都不得影响订阅、检查与推送。
+//
+// 为什么改成「快照 → 锁外抓取 → 锁内合并」（2026-10-27 用户报 bug：
+// 「没有封面就不推送下载」）：
+//
+//	旧实现把整段网络抓取包在 a.mu 里。抓一次 mikan 番剧页最长 25 秒，
+//	这期间 CheckAll、订阅首推、任何写配置的请求全堵在锁上。真机上正好
+//	撞到 mikan 的 IPv6 被 reset：封面抓取失败的同时，首推也被拖到超时，
+//	于是用户看到的就是「没封面 → 也没下载」。
+//
+// 现在的顺序保证与网络无关：
+//  1. 锁内只做订阅/配置快照，立刻放锁；
+//  2. 抓取在锁外、一个只带 cfg/cfgPath/log 的 App 副本里做（不碰
+//     state/qbit/auth，绝不会顺手改到推送状态）；
+//  3. 成功后锁内只合并封面相关字段；失败只补空的 TMDBID/EpTotal。
 func (a *App) FetchCoverAsync(subID string) {
+	a.mu.Lock()
+	live := a.cfg.FindSub(subID)
+	if live == nil {
+		a.mu.Unlock()
+		return
+	}
+	sub := *live
+	cfgCopy := *a.cfg
+	a.mu.Unlock()
+
 	go func() {
+		// worker 只持有配置副本：FetchCover 只读 cfg / cfgPath / log。
+		worker := &App{cfg: &cfgCopy, cfgPath: a.cfgPath, log: a.log}
+		msg, err := worker.FetchCover(&sub)
+
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		sub := a.cfg.FindSub(subID)
-		if sub == nil {
-			return
+		cur := a.cfg.FindSub(subID)
+		if cur == nil {
+			return // 抓封面期间订阅被删了
 		}
-		msg, err := a.FetchCover(sub)
 		if err != nil {
-			// 没有海报也算「识别到了条目」：TMDBID / EpTotal 已经写进订阅，
-			// 总集数角标依赖它，所以失败分支同样要回写配置。
-			if sub.TMDBID > 0 || sub.EpTotal > 0 {
+			// 没海报也可能已经识别到条目（TMDBID / 总集数），角标要用；
+			// 只补空值，绝不覆盖用户在等待期间手改的内容。
+			changed := false
+			if cur.TMDBID == 0 && sub.TMDBID > 0 {
+				cur.TMDBID = sub.TMDBID
+				changed = true
+			}
+			if cur.EpTotal == 0 && sub.EpTotal > 0 {
+				cur.EpTotal = sub.EpTotal
+				changed = true
+			}
+			if changed {
 				if serr := SaveConfig(a.cfgPath, a.cfg); serr != nil {
-					a.log.Printf("⚠ 条目信息回写失败（%s）：%v", sub.Title, serr)
+					a.log.Printf("⚠ 条目信息回写失败（%s）：%v", cur.Title, serr)
 				}
 			}
-			a.log.Printf("⚠ 封面抓取失败（%s）：%v", sub.Title, err)
+			a.log.Printf("⚠ 封面抓取失败（%s）：%v —— 不影响订阅、检查与下载", cur.Title, err)
 			return
 		}
-		if err := SaveConfig(a.cfgPath, a.cfg); err != nil {
-			a.log.Printf("⚠ 封面已下载但配置回写失败（%s）：%v", sub.Title, err)
+		cur.Cover = sub.Cover
+		cur.CoverName = sub.CoverName
+		cur.CoverYear = sub.CoverYear
+		cur.CoverFrom = sub.CoverFrom
+		if cur.TMDBID == 0 {
+			cur.TMDBID = sub.TMDBID
+		}
+		if cur.EpTotal == 0 {
+			cur.EpTotal = sub.EpTotal
+		}
+		if serr := SaveConfig(a.cfgPath, a.cfg); serr != nil {
+			a.log.Printf("⚠ 封面已下载但配置回写失败（%s）：%v", cur.Title, serr)
 			return
 		}
 		a.log.Printf("✓ %s", msg)

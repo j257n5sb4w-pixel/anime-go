@@ -216,7 +216,17 @@ func (a *App) initialPushAndQueue(sub *Subscription) (first Result, pending int,
 	a.mu.Unlock()
 
 	plan, perr := a.backfillPlan(sub, pc)
+	// 抓 RSS 失败（mikan 抖动、IPv6 被 reset）时立刻重试两次再放弃：
+	// 首推不能因为一次网络抽风就让用户干等到下一小时的定时检查，
+	// 真机上就是这么丢掉第一次推送的（封面抓取同时失败，容易被当成
+	// 「没封面所以不下载」，其实两件事互不相干）。
+	for attempt := 1; perr != nil && attempt <= 2; attempt++ {
+		a.log.Printf("⚠ [%s] 首次抓取 RSS 失败（第 %d 次），3 秒后重试：%v", sub.Title, attempt, perr)
+		time.Sleep(3 * time.Second)
+		plan, perr = a.backfillPlan(sub, pc)
+	}
 	if perr != nil {
+		a.log.Printf("✗ [%s] 首推放弃：%v（订阅已保存，下一轮定时检查会继续尝试）", sub.Title, perr)
 		return Result{SubID: sub.ID, SubTitle: sub.Title, Reason: perr.Error()}, 0, perr
 	}
 	if len(plan) == 0 {
