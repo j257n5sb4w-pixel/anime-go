@@ -1,0 +1,31 @@
+# 运行时产物：绝不入库
+anime-go
+anime-go-*
+/anime-go
+*.log
+state.json
+auth.json
+config.json
+covers/
+
+# 历史备份与归档（体积大、含旧配置）
+backup-*/
+backup_*/
+_old_cli_src/
+
+# 但配置样例要保留
+!config.example.json
+
+# Go
+*.test
+*.out
+*.prof
+/vendor/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

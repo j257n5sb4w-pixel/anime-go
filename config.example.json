@@ -1,0 +1,72 @@
+{
+  "listen": ":7788",
+  "interval_minutes": 60,
+  "dry_run": false,
+  "state_file": "state.json",
+  "log_file": "anime-go.log",
+  "ua": "Mozilla/5.0 (X11; Linux aarch64) anime-go/0.1",
+  "mikan_host": "https://mikanime.tv",
+
+  "tmdb_key": "",
+  "tmdb_host": "https://api.tmdb.org",
+  "cover_source": "mikan",
+
+  "qbit": {
+    "url": "http://127.0.0.1:8080",
+    "apikey": "",
+    "username": "",
+    "password": "",
+    "category": "anime-go"
+  },
+
+  "library_root": "/media/anime",
+  "allow_write_prefixes": [
+    "/media/anime/"
+  ],
+  "downloads_root": "/downloads",
+  "mounts": [
+    {
+      "qbit": "/media",
+      "local": "/mnt/media"
+    },
+    {
+      "qbit": "/downloads",
+      "local": "/mnt/dl"
+    }
+  ],
+
+  "session_ttl_minutes": 120,
+
+  "default_match": [
+    "(1080|2160)[Pp]?"
+  ],
+  "default_exclude": [
+    "720[Pp]",
+    "合集"
+  ],
+
+  "subscriptions": [
+    {
+      "id": "demo-0001",
+      "title": "示例番剧 (2026)",
+      "file_title": "示例番剧",
+      "url": "https://mikanime.tv/RSS/Bangumi?bangumiId=0000&subgroupid=000",
+      "season": 1,
+      "subgroup": "ANi",
+      "match": [
+        "1080"
+      ],
+      "exclude": [
+        "720"
+      ],
+      "ep_patterns": [],
+      "total_episodes": 12,
+      "rename_template": "[{{subgroup}}] {{filetitle}} S{{season}}E{{ep}}",
+      "save_path": "/media/anime/{{dirname}}/Season {{season_n}}",
+      "enabled": false,
+      "week_label": "星期四",
+      "skip_backfill": false,
+      "ep_offset": 0
+    }
+  ]
+}

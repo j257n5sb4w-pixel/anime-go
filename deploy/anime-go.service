@@ -1,0 +1,26 @@
+[Unit]
+Description=anime-go 番剧 RSS 订阅推送到 qBittorrent
+Documentation=https://github.com/j257n5sb4w-pixel/anime-go
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/anime-go
+ExecStart=/opt/anime-go/anime-go -c /opt/anime-go/config.json
+Restart=always
+RestartSec=15
+# 一次检查最多跑 120 秒，超时就算失败（RSS 卡住时别无限挂着）
+JobTimeoutSec=120
+# 不因为连续失败而放弃重启（单板机网络抖动是常态）
+StartLimitIntervalSec=0
+# 内存限制：小机器只有 1GB，给个上限防止意外
+MemoryMax=128M
+TimeoutStopSec=10
+# 日志
+StandardOutput=append:/opt/anime-go/stdout.log
+StandardError=append:/opt/anime-go/stderr.log
+
+[Install]
+WantedBy=multi-user.target
