@@ -19,9 +19,9 @@
     "category": "anime-go"
   },
 
-  "library_root": "/media/anime",
+  "library_root": "/media/新番追更",
   "allow_write_prefixes": [
-    "/media/anime/"
+    "/media/新番追更/"
   ],
   "downloads_root": "/downloads",
   "mounts": [
@@ -62,7 +62,7 @@
       "ep_patterns": [],
       "total_episodes": 12,
       "rename_template": "[{{subgroup}}] {{filetitle}} S{{season}}E{{ep}}",
-      "save_path": "/media/anime/{{dirname}}/Season {{season_n}}",
+      "save_path": "/media/新番追更/{{dirname}}/Season {{season_n}}",
       "enabled": false,
       "week_label": "星期四",
       "skip_backfill": false,

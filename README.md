@@ -51,7 +51,7 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o anime-go .
 go test ./...
 ```
 
-当前 67 个用例，覆盖集数解析、季号/偏移、路径渲染、清理匹配、鉴权矩阵、qB 路径映射等历史踩坑点。
+默认跑 62 个用例，覆盖集数解析、季号/偏移、路径渲染、清理匹配、鉴权矩阵、qB 路径映射等历史踩坑点；另有 5 个会打外网的 mikan 用例，需要 `go test -tags nettest` 才运行。
 
 ## 快速开始
 
@@ -206,7 +206,7 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:7788/api/subs
 
 ```
 .
-├── *.go                    源码（37 个文件，含 6 个 _test.go）
+├── *.go                    源码（37 个 .go，其中 11 个是测试）
 ├── go.mod
 ├── config.example.json     配置样例（不含任何真实凭据）
 ├── deploy/
