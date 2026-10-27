@@ -214,15 +214,19 @@ func (s *server) auditOne(sub *Subscription, tasks []Torrent, qbOK bool) AuditSu
 			}
 			continue
 		}
-		ep := ExtractEpisode(it.Title, sub.EpPatterns)
-		if ep == 0 && !IsMovie(it.Title) {
-			epUnknown++
-			if firstEpUnknownSample == "" {
-				firstEpUnknownSample = it.Title
+		// 剧场版不做集数识别：ep 恒为 0，不算「集数识别失败」
+		ep := 0
+		if !sub.Movie {
+			ep = ExtractEpisode(it.Title, sub.EpPatterns)
+			if ep == 0 && !IsMovie(it.Title) {
+				epUnknown++
+				if firstEpUnknownSample == "" {
+					firstEpUnknownSample = it.Title
+				}
+				continue
 			}
-			continue
 		}
-		if sub.TotalEpisodes > 0 && ep > sub.TotalEpisodes {
+		if !sub.Movie && sub.TotalEpisodes > 0 && ep > sub.TotalEpisodes {
 			continue
 		}
 		if s.app.state.HasSeen(sub.ID, it.Key()) || s.app.state.HasPushedEp(sub.ID, ep) {
@@ -233,6 +237,35 @@ func (s *server) auditOne(sub *Subscription, tasks []Torrent, qbOK bool) AuditSu
 	res.Matched = matched
 	res.Filtered = filtered
 	res.Pending = pending
+
+	// —— 判据零：剧场版订阅 ——
+	//
+	// 剧场版是「一次性任务」，用追更那几条判据（「一集都没下成」等）
+	// 会给出误导性的结论，所以单独判。
+	if sub.Movie {
+		switch {
+		case st.MovieDone:
+			add(AuditIssue{Code: "movie_done", Level: "info", Title: "剧场版已下载完成",
+				Detail: "这是一次性订阅：已推送成功，之后每小时检查都不会再抓取。" +
+					"想换版本（比如从 1080p 换成 4K）请勾「重置状态并重推」，它会清掉完成标记重新下一次。"})
+		case pending > 0:
+			add(AuditIssue{Code: "movie_pending", Level: "info", Title: "剧场版等待推送",
+				Detail: fmt.Sprintf("RSS 里有 %d 条可推送的资源（已命中规则），下一轮检查会推送其中一条，推成功即完成。", pending)})
+		case filtered > 0 && matched == 0:
+			add(AuditIssue{Code: "movie_all_filtered", Level: "warn", Title: "剧场版资源都被过滤规则挡掉了",
+				Detail: fmt.Sprintf("RSS 里 %d 条资源全部未命中 match 规则（或命中 exclude）。当前 match=%s，exclude=%s。%s",
+					filtered, quoteRuleList(s.app.cfg.EffectiveMatch(sub)), quoteRuleList(s.app.cfg.EffectiveExclude(sub)), firstFilteredReason),
+				Sample: firstFilteredSample})
+		case noLink > 0:
+			add(AuditIssue{Code: "movie_no_link", Level: "warn", Title: "剧场版条目没有下载地址",
+				Detail: fmt.Sprintf("%d 条命中了规则但没有种子/磁力，只能等下一个版本。", noLink),
+				Sample: firstNoLinkSample})
+		default:
+			add(AuditIssue{Code: "movie_empty", Level: "warn", Title: "RSS 里暂时没有可下载的剧场版资源",
+				Detail: "这条订阅还是空的：等 mikan 出源即可，下一轮检查会自动推。想立刻试可以点「立即检查」。"})
+		}
+		return res
+	}
 
 	// —— 判据一：一集都没下成，但 seen 已经把该推的条目锁死了 ——
 	// 这是最隐蔽的一种，也是用户实际遇到的那种。

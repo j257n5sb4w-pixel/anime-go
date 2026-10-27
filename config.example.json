@@ -6,11 +6,19 @@
   "log_file": "anime-go.log",
   "ua": "Mozilla/5.0 (X11; Linux aarch64) anime-go/0.1",
   "mikan_host": "https://mikanime.tv",
-
+  "movie_save_path": "/media/剧场版/{{dirname}}",
+  "movie_rename": "[{{subgroup}}] {{filetitle}}",
   "tmdb_key": "",
   "tmdb_host": "https://api.tmdb.org",
   "cover_source": "mikan",
-
+  "proxy": {
+    "enabled": false,
+    "protocol": "http",
+    "host": "",
+    "port": 0,
+    "username": "",
+    "password": ""
+  },
   "qbit": {
     "url": "http://127.0.0.1:8080",
     "apikey": "",
@@ -18,10 +26,10 @@
     "password": "",
     "category": "anime-go"
   },
-
   "library_root": "/media/新番追更",
   "allow_write_prefixes": [
-    "/media/新番追更/"
+    "/media/新番追更/",
+    "/media/剧场版/"
   ],
   "downloads_root": "/downloads",
   "mounts": [
@@ -34,9 +42,7 @@
       "local": "/mnt/dl"
     }
   ],
-
   "session_ttl_minutes": 120,
-
   "default_match": [
     "(1080|2160)[Pp]?"
   ],
@@ -44,7 +50,6 @@
     "720[Pp]",
     "合集"
   ],
-
   "subscriptions": [
     {
       "id": "demo-0001",
@@ -66,6 +71,27 @@
       "enabled": false,
       "week_label": "星期四",
       "skip_backfill": false,
+      "ep_offset": 0
+    },
+    {
+      "id": "demo-movie",
+      "title": "示例剧场版 (2026)",
+      "file_title": "示例剧场版",
+      "url": "https://mikanime.tv/RSS/Bangumi?bangumiId=0000&subgroupid=000",
+      "movie": true,
+      "season": 1,
+      "subgroup": "ANi",
+      "match": [
+        "1080"
+      ],
+      "exclude": [
+        "720"
+      ],
+      "total_episodes": 0,
+      "rename_template": "[{{subgroup}}] {{filetitle}}",
+      "save_path": "/media/剧场版/{{dirname}}",
+      "enabled": false,
+      "week_label": "",
       "ep_offset": 0
     }
   ]

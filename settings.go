@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,10 @@ type SettingsPayload struct {
 	IntervalMinutes *int    `json:"interval_minutes"`
 	UA              *string `json:"ua"`
 
+	// MikanHost 是番剧搜索/番剧页的站点地址（bangumi 连接选择）。
+	// 前端给几个常用镜像 + 一个自定义输入框；留空 = 用内置默认。
+	MikanHost *string `json:"mikan_host"`
+
 	// TMDB 封面
 	TMDBKey  *string `json:"tmdb_key"`
 	TMDBHost *string `json:"tmdb_host"`
@@ -64,6 +69,22 @@ type SettingsPayload struct {
 	// CoverSource 封面来源：mikan（默认，一季一图）或 tmdb。
 	CoverSource *string `json:"cover_source"`
 
+	// ---- 剧场版 ----
+	// 剧场版订阅的落盘位置与命名模板（设置 → 下载）。
+	// 与追更模板分开：剧场版是「一部电影一个目录」，没有 Season/集号。
+	MovieSavePath *string `json:"movie_save_path"`
+	MovieRename   *string `json:"movie_rename"`
+
+	// ---- 出站代理 ----
+	// 全部字段都是指针：设置页每次都会把整份表单发上来，
+	// 用指针区分「没传」与「传了空值」。
+	ProxyEnabled  *bool   `json:"proxy_enabled"`
+	ProxyProtocol *string `json:"proxy_protocol"`
+	ProxyHost     *string `json:"proxy_host"`
+	ProxyPort     *int    `json:"proxy_port"`
+	ProxyUsername *string `json:"proxy_username"`
+	ProxyPassword *string `json:"proxy_password"`
+
 	// 登录有效期（分钟）。-1 = 永不过期。
 	SessionTTLMinutes *int `json:"session_ttl_minutes"`
 }
@@ -85,6 +106,9 @@ func (s *server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 			"interval_minutes": cfg.IntervalMinutes,
 			"ua":               cfg.UA,
+			"mikan_host":       cfg.MikanHost,
+			// bangumi 连接下拉框的候选值（前端直接渲染，避免两边各写一份）
+			"mikan_hosts": mikanHostPresets(),
 
 			"tmdb_key":     maskKey(cfg.TMDBKey),
 			"tmdb_key_set": cfg.TMDBKey != "",
@@ -101,11 +125,29 @@ func (s *server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 			"cover_source":         cfg.CoverSource,
 			"default_match":        cfg.DefaultMatch,
 			"default_exclude":      cfg.DefaultExclude,
-			"session_ttl_minutes":  s.app.auth.SessionTTLMinutes(),
-			"listen":               cfg.Listen,
-			"state_file":           cfg.StateFile,
-			"log_file":             cfg.LogFile,
-			"dry_run":              cfg.DryRun,
+			// 剧场版
+			"movie_save_path":         cfg.MovieSavePathValue(),
+			"movie_rename":            cfg.MovieRenameValue(),
+			"movie_default_save_path": defaultMovieSavePath,
+			"movie_default_rename":    defaultMovieRename,
+			// 代理（密码打码，只回传是否已设置）
+			"proxy": map[string]any{
+				"enabled":      cfg.Proxy.Enabled,
+				"protocol":     cfg.Proxy.Protocol,
+				"host":         cfg.Proxy.Host,
+				"port":         cfg.Proxy.Port,
+				"username":     cfg.Proxy.Username,
+				"password":     maskKey(cfg.Proxy.Password),
+				"password_set": cfg.Proxy.Password != "",
+				"protocols":    proxyProtocols,
+				"describe":     cfg.Proxy.Describe(),
+				"active":       activeProxyText(),
+			},
+			"session_ttl_minutes": s.app.auth.SessionTTLMinutes(),
+			"listen":              cfg.Listen,
+			"state_file":          cfg.StateFile,
+			"log_file":            cfg.LogFile,
+			"dry_run":             cfg.DryRun,
 		},
 		// 供前端渲染"未来功能"占位区
 		"planned": []map[string]string{
@@ -297,6 +339,88 @@ func (s *server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		changed = append(changed, "封面来源")
 	}
 
+	// ---- bangumi 连接（mikan 站点地址） ----
+	//
+	// 用户 2026-10-27 要求：设置里能选 bangumi 镜像站，也能自己填一个。
+	// 这里只校验「是不是一个完整的 http(s) 地址」，不做连通性测试
+	// （mikan 站点偶发抽风，强制测通会让人没法保存）。
+	if req.MikanHost != nil {
+		v, err := normalizeSiteURL(*req.MikanHost)
+		if err != nil {
+			*cfg = backup
+			s.app.mu.Unlock()
+			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		cfg.MikanHost = v
+		changed = append(changed, "bangumi 站点")
+	}
+
+	// ---- 剧场版落盘模板 ----
+	if req.MovieSavePath != nil {
+		v := strings.TrimRight(strings.TrimSpace(*req.MovieSavePath), "/")
+		if v != "" {
+			if !strings.HasPrefix(v, "/") || strings.Contains(v, "..") {
+				*cfg = backup
+				s.app.mu.Unlock()
+				writeJSON(w, 400, map[string]any{
+					"ok":    false,
+					"error": "剧场版保存路径必须是以 / 开头的 qBittorrent 侧绝对路径，且不能含 ..",
+				})
+				return
+			}
+		}
+		cfg.MovieSavePath = v
+		changed = append(changed, "剧场版保存路径")
+	}
+	if req.MovieRename != nil {
+		cfg.MovieRename = strings.TrimSpace(*req.MovieRename)
+		changed = append(changed, "剧场版命名模板")
+	}
+
+	// ---- 出站代理 ----
+	//
+	// 只改传了的字段。密码的特殊值 "-" = 清空（与 TMDB Key 同一套约定）。
+	// 关掉代理时不校验主机端口：用户可能只是想临时停用，留着旧值下次再开。
+	if proxyTouched := req.ProxyEnabled != nil || req.ProxyProtocol != nil ||
+		req.ProxyHost != nil || req.ProxyPort != nil ||
+		req.ProxyUsername != nil || req.ProxyPassword != nil; proxyTouched {
+
+		if req.ProxyEnabled != nil {
+			cfg.Proxy.Enabled = *req.ProxyEnabled
+		}
+		if req.ProxyProtocol != nil {
+			cfg.Proxy.Protocol = strings.ToLower(strings.TrimSpace(*req.ProxyProtocol))
+		}
+		if req.ProxyHost != nil {
+			cfg.Proxy.Host = strings.TrimSpace(*req.ProxyHost)
+		}
+		if req.ProxyPort != nil {
+			cfg.Proxy.Port = *req.ProxyPort
+		}
+		if req.ProxyUsername != nil {
+			cfg.Proxy.Username = strings.TrimSpace(*req.ProxyUsername)
+		}
+		if req.ProxyPassword != nil {
+			switch v := strings.TrimSpace(*req.ProxyPassword); v {
+			case "-":
+				cfg.Proxy.Password = ""
+			case "":
+				// 空 = 不修改（表单里显示的是打码值）
+			default:
+				cfg.Proxy.Password = v
+			}
+		}
+		cfg.Proxy.normalize()
+		if err := cfg.Proxy.Validate(); err != nil {
+			*cfg = backup
+			s.app.mu.Unlock()
+			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		changed = append(changed, "出站代理")
+	}
+
 	// ---- 登录有效期 ----
 	// -1 = 永久；0 = 单次有效（关浏览器失效）；>0 = 分钟数（最长一年）。
 	if req.SessionTTLMinutes != nil {
@@ -350,6 +474,16 @@ func (s *server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// 重建 qbit 客户端：它内部持有配置副本，不重建则新设置不生效
 	s.app.qbit = NewQbit(cfg.Qbit, cfg.UA)
 	s.app.mu.Unlock()
+
+	// 代理热生效：所有出站 client 共用 proxy.go 的动态 Transport，
+	// 改完下一次请求就走新代理，不需要重启（已建的 keep-alive 连接除外）。
+	if err := ApplyProxy(cfg.Proxy); err != nil {
+		s.app.log.Printf("⚠ 代理设置未能生效: %v", err)
+	} else if cfg.Proxy.Enabled {
+		s.app.log.Printf("出站代理已生效: %s", cfg.Proxy.Describe())
+	} else {
+		s.app.log.Printf("出站代理已关闭（直连）")
+	}
 
 	// 登录有效期热生效。
 	// 收紧期限时会轮换会话密钥（旧会话按老期限活着，不轮换等于没改短），
@@ -492,4 +626,122 @@ func maskKey(k string) string {
 		return strings.Repeat("*", len(k))
 	}
 	return k[:6] + strings.Repeat("*", 8) + k[len(k)-4:]
+}
+
+// ---- bangumi 站点（mikan 连接选择） ----
+
+// MikanHostPreset 是设置页「bangumi 连接」下拉框的一项。
+type MikanHostPreset struct {
+	Label string `json:"label"`
+	Value string `json:"value"` // 空 = 自定义（前端显示输入框）
+	Desc  string `json:"desc"`
+}
+
+// mikanHostPresets 返回内置的站点候选。
+//
+// 用户 2026-10-27 要求「自带几个镜像站，还有一个空，让用户自己填」。
+// 这里只放**确认存在**的站点：mikanime.tv 是当前主站，mikanani.me 是旧域名
+// （部分网络/部分地区仍可用，也常被用作分流）。绝不编造域名——
+// 填错的地址会让整个抓取静默失败，比没有候选更糟。
+// 想走自建反代（比如套在 192.168.50.17 上的 nginx）就选最后一项自己填。
+func mikanHostPresets() []MikanHostPreset {
+	return []MikanHostPreset{
+		{Label: "mikanime.tv（官方主站，默认）", Value: "https://mikanime.tv", Desc: "官方主站，更新最快"},
+		{Label: "mikanani.me（旧域名 / 备用）", Value: "https://mikanani.me", Desc: "老域名，部分网络仍可访问"},
+		{Label: "自定义…", Value: "", Desc: "填自己的镜像或反向代理地址，如 https://mikan.example.com"},
+	}
+}
+
+// normalizeSiteURL 校验并归一化「bangumi 站点地址」。
+//
+// 允许空值（= 用内置默认），其余必须是完整的 http(s) 地址；
+// 去掉末尾多余的斜杠，避免拼出 "//Home/Bangumi/..."。
+func normalizeSiteURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("站点地址要写成完整地址，例如 https://mikanime.tv")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("站点地址只支持 http:// 或 https:// 开头")
+	}
+	return strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/"), nil
+}
+
+// activeProxyText 返回当前真正生效的代理描述（给状态页/设置页展示）。
+func activeProxyText() string {
+	u := CurrentProxy()
+	if u == nil {
+		return "直连"
+	}
+	// 不显示密码
+	host := u.Host
+	if u.User != nil {
+		host = u.User.Username() + "@" + host
+	}
+	return u.Scheme + "://" + host
+}
+
+// handleProxyTest 测试代理是否可用（不保存设置）。
+func (s *server) handleProxyTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]any{"ok": false, "error": "只接受 POST"})
+		return
+	}
+	var req SettingsPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "请求体解析失败: " + err.Error()})
+		return
+	}
+
+	// 以当前配置为底，把表单里的代理字段盖上去（密码传空则沿用已保存的）
+	p := s.app.cfg.Proxy
+	if req.ProxyEnabled != nil {
+		p.Enabled = *req.ProxyEnabled
+	}
+	if req.ProxyProtocol != nil {
+		p.Protocol = *req.ProxyProtocol
+	}
+	if req.ProxyHost != nil {
+		p.Host = *req.ProxyHost
+	}
+	if req.ProxyPort != nil {
+		p.Port = *req.ProxyPort
+	}
+	if req.ProxyUsername != nil {
+		p.Username = *req.ProxyUsername
+	}
+	if req.ProxyPassword != nil {
+		switch v := strings.TrimSpace(*req.ProxyPassword); v {
+		case "-":
+			p.Password = ""
+		case "":
+		default:
+			p.Password = v
+		}
+	}
+	p.normalize()
+	if !p.Enabled {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "代理未启用，无需测试（当前为直连）"})
+		return
+	}
+
+	target := ""
+	if req.MikanHost != nil {
+		target = strings.TrimRight(strings.TrimSpace(*req.MikanHost), "/") + "/"
+	}
+	res := TestProxy(p, target, s.app.cfg.UA)
+	s.app.log.Printf("代理测试 %s → %s：%s（%d ms）", res.Proxy, res.Target, proxyTestText(res), res.LatencyMS)
+	writeJSON(w, 200, res)
+}
+
+// proxyTestText 把测试结果说成人话。
+func proxyTestText(r ProxyTestResult) string {
+	if r.Error != "" {
+		return "失败：" + r.Error
+	}
+	return fmt.Sprintf("HTTP %d", r.Status)
 }

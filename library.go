@@ -209,6 +209,19 @@ func (a *App) EnsureSeasonDirs(qbitDir string) error {
 	return os.MkdirAll(local, 0o755)
 }
 
+// EnsureMovieDir 确保剧场版的落盘目录存在（就是 save_path 本身）。
+//
+// 与 EnsureSeasonDirs 的唯一区别是语义：追更订阅的 save_path 已经是
+// "<番名>/Season N"，而这个函数建的是 "/media/剧场版/<番名>" 这一层，
+// 不再往下加 Season（剧场版没有季/集的概念）。
+func (a *App) EnsureMovieDir(qbitDir string) error {
+	local, ok := a.qbPathToLocal(qbitDir)
+	if !ok {
+		return nil // 没有挂载映射：本机看不见，交给 qB 自己建
+	}
+	return os.MkdirAll(local, 0o755)
+}
+
 // seasonDirOf 从 save_path 模板里剥出「Season N」这一级的名字，
 // 用于「同番多季」时给用户提示。拿不到就返回空。
 func seasonDirOf(p string) string {

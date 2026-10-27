@@ -20,6 +20,17 @@ type SubState struct {
 	FeedTitle   string    `json:"feed_title,omitempty"`
 	// PushedEps 记录已推送过的集数，用于同集多版本去重（0 表示剧场版）
 	PushedEps map[int]bool `json:"pushed_eps,omitempty"`
+
+	// MovieDone 表示这条**剧场版**订阅已经推送成功、任务完成。
+	//
+	// 剧场版是一次性下载（用户 2026-10-27：剧场版无需后续更新、无需集数识别），
+	// 所以推成功一条之后每小时检查都不该再去抓 RSS —— 既省流量，也避免
+	// 同一部电影的 720p / 1080p / BDRip 几个版本被轮着推一遍。
+	// 只有 TV 番订阅会忽略这个字段。
+	//
+	// 「重置状态并重推」会清空整条 SubState，这个标记也随之消失，
+	// 于是剧场版能重新下一次 —— 换版本、补种时就是这么用的。
+	MovieDone bool `json:"movie_done,omitempty"`
 }
 
 type State struct {

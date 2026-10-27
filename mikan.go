@@ -51,7 +51,8 @@ import (
 const defaultMikanHost = "https://mikanime.tv"
 
 // mikan 页面很大（搜索页 4MB+），25s 的共享 client 容易超时，单独给一个。
-var mikanClient = &http.Client{Timeout: 45 * time.Second}
+// 走 proxy.go 的共享 Transport：设置里的代理对它即时生效。
+var mikanClient = newHTTPClient(45 * time.Second)
 
 var (
 	// ani-rss 的特例语法：直接搜 "id: 3981"
@@ -468,10 +469,20 @@ type MikanBangumi struct {
 	ID     string       `json:"id"`
 	Title  string       `json:"title"`
 	Cover  string       `json:"cover"`
-	Week   string       `json:"week"`    // "星期六"
+	Week   string       `json:"week"`    // "星期六"；剧场版是 "剧场版"
 	RSSAll string       `json:"rss_all"` // 整部番（不分子幕组）的 RSS
 	Groups []MikanGroup `json:"groups"`
 	URL    string       `json:"url"`
+	// Movie 表示这部作品在 mikan 上被归为「剧场版」（放送星期那一栏写的是剧场版/OVA，
+	// 或者标题里带「剧场版」）。
+	//
+	// 为什么放在详情里：用户在当季番剧列表里点「剧场版」分档进来的，
+	// 前端拿着这个标记就能把订阅直接建成剧场版（一次性、不带集数），
+	// 不需要用户再手动勾选——用户 2026-10-27 的要求就是「在 mikan 上选剧场版时」。
+	Movie bool `json:"movie"`
+	// TotalEps 是 mikan 页面上的「总集数」。剧场版是 1。
+	// 只用于界面展示，不参与剧场版判定（真有 1 集的短片）。
+	TotalEps int `json:"total_eps"`
 }
 
 func mikanHostOf(cfg *Config) string {
@@ -636,6 +647,20 @@ func MikanBangumiByID(cfg *Config, id string) (*MikanBangumi, error) {
 	return parseMikanBangumi(body, host, id), nil
 }
 
+// atoiTrim 宽松解析页面上的数字：取开头连续的数字，"1" / " 1 " / "12 集" 都认。
+// 解析不出来返回 0（调用方按「未知」处理）。
+func atoiTrim(s string) int {
+	s = strings.TrimSpace(s)
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
 func parseMikanBangumi(body, host, id string) *MikanBangumi {
 	doc := parseHTML(body)
 	b := &MikanBangumi{
@@ -653,6 +678,8 @@ func parseMikanBangumi(body, host, id string) *MikanBangumi {
 	}
 
 	// 放送日期 → 星期几（首页「今日订阅」直接用得上）
+	// 顺带记下「总集数：N」——剧场版页面这里是 1，可以帮界面判断，
+	// 但不作为剧场版的判定依据（真正的 1 集短片也有这个值）。
 	for _, p := range queryAll(doc, "p.bangumi-info") {
 		t := textOf(p)
 		if strings.HasPrefix(t, "放送日期") {
@@ -661,8 +688,23 @@ func parseMikanBangumi(body, host, id string) *MikanBangumi {
 			} else if i := strings.Index(t, ":"); i >= 0 {
 				b.Week = strings.TrimSpace(t[i+1:])
 			}
-			break
+			continue
 		}
+		if strings.HasPrefix(t, "总集数") {
+			if i := strings.Index(t, "："); i >= 0 {
+				b.TotalEps = atoiTrim(t[i+len("："):])
+			} else if i := strings.Index(t, ":"); i >= 0 {
+				b.TotalEps = atoiTrim(t[i+1:])
+			}
+		}
+	}
+
+	// 剧场版标记：mikan 把剧场版的「放送日期」直接写成「剧场版」/「OVA」。
+	// 当季列表里则是 data-dayofweek=7/8，两处都认（见 isMovieWeekText）。
+	b.Movie = isMovieWeekText(b.Week)
+	if !b.Movie {
+		// 兜底：有些剧场版条目没有放送日期，标题里带「剧场版」也算。
+		b.Movie = strings.Contains(b.Title, "剧场版") || strings.Contains(b.Title, "劇場版")
 	}
 
 	// 封面：mikanime.tv 放在 div.bangumi-poster 的 background-image 里
@@ -738,6 +780,25 @@ func parseMikanBangumi(body, host, id string) *MikanBangumi {
 //  data-dayofweek: 0=星期日 … 6=星期六，7=剧场版，8=OVA
 //  注意：不带 year/seasonStr 时该地址返回 500，必须两个参数都带上。
 // ============================================================
+
+// isMovieWeekText 判断 mikan 的「放送日期」文本是否表示剧场版/OVA。
+//
+// mikan 的剧场版条目没有真正的星期，放送日期一栏写的是「剧场版」或「OVA」；
+// 当季列表里同一个分档用 data-dayofweek=7（剧场版）/ 8（OVA）表示。
+// 这两处是本程序识别「用户选的是剧场版」的唯一依据——不能靠标题猜：
+// 有些 TV 番的标题里也带「剧场版」（那是特番，仍要按集更新）。
+func isMovieWeekText(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, k := range []string{"剧场版", "劇場版", "OVA"} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
 
 // MikanSeasonItem 是当季列表里的一条番剧
 type MikanSeasonItem struct {

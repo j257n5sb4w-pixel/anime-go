@@ -108,6 +108,10 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
 .weekbar .d.zero{color:#c2c8d2}
 .weekbar .d.zero b{background:#f5f6f9;color:#c8cedb}
 .weekbar .d.und{color:#a08b4f;border-style:dashed}
+.weekbar .d.mv{color:#2f7d32;border-style:solid;border-color:#cfe6d5}
+.weekbar .d.mv b{background:#e8f5eb;color:#2f7d32}
+.weekbar .d.mv.on{background:#e8f5eb;border-color:#2f7d32;color:#226b28}
+.weekbar .d.mv.on b{background:#2f7d32;color:#fff}
 /* 日期标题行 */
 .dayhead{display:flex;align-items:center;gap:9px;margin:0 0 11px}
 .dayhead h2{font-size:14.5px;margin:0;color:#444;font-weight:600}
@@ -250,6 +254,12 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
 .subcover .epbadge .t{font-size:14px;font-weight:600;color:#fff;opacity:1}
 .subcover .epbadge.z{background:rgba(190,60,60,.78)}
 .subcard:hover .subcover .epbadge{opacity:0;transition:.16s}
+/* 剧场版角标：替代集数角标（剧场版没有集数可数） */
+.subcover .mvtag{position:absolute;right:6px;bottom:6px;z-index:2;
+  padding:2px 8px;border-radius:9px;font-size:11px;line-height:1.6;font-weight:600;
+  color:#fff;background:rgba(38,120,72,.86);backdrop-filter:blur(3px);
+  letter-spacing:.3px;pointer-events:none;white-space:nowrap}
+.subcard:hover .subcover .mvtag{opacity:0;transition:.16s}
 /* ===== 订阅体检 ===== */
 .ahint{font-size:12.5px;color:#6b7385;margin-bottom:12px;line-height:1.6}
 .aitem{border:1px solid #eceff4;border-radius:10px;padding:12px 14px;margin-bottom:10px}
@@ -474,6 +484,14 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
       <div id="meta" class="hidden">
         <label>订阅名（决定文件夹名，可在下面切换用哪个源）</label>
         <input type="text" id="title">
+        <label class="ckline" style="display:flex;align-items:center;gap:8px;margin:10px 0 2px">
+          <input type="checkbox" id="movie" style="width:auto;margin:0" onchange="applyMovieAdd()">
+          <span>这是剧场版（一次性下载）</span>
+        </label>
+        <div class="hint" id="movieHint" style="margin:0 0 10px">
+          勾上后：不按集数去重、只推一次、下完即停；默认落到「设置 → 下载 → 剧场版」里的目录。
+          从 mikan 的「剧场版」分类点进来的卡片会自动勾上。
+        </div>
         <div class="namesrc">
           <label class="rd"><input type="radio" name="namesrc" value="mikan" checked onchange="applyNameSrc()">
             用 mikan 名<span class="nm" id="nmMikan"></span></label>
@@ -498,7 +516,7 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
           </div>
           <div id="tmdbCand"></div>
         </div>
-        <div class="row">
+        <div class="row" id="seasonRow">
           <div style="flex:1">
             <label>季度</label>
             <input type="number" id="season" value="1" min="1">
@@ -614,11 +632,12 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
   <h1>设置</h1>
   <div class="sub">qBittorrent 连接等全局参数</div>
 
-  <!-- 二级菜单：下载 / 抓取 / TMDB / 登录 -->
+  <!-- 二级菜单：下载 / 抓取 / TMDB / 代理 / 登录 -->
   <div class="tabbar">
     <button class="tab on" data-tab="dl" onclick="setTab('dl')">下载</button>
     <button class="tab" data-tab="fetch" onclick="setTab('fetch')">抓取</button>
     <button class="tab" data-tab="tmdb" onclick="setTab('tmdb')">TMDB</button>
+    <button class="tab" data-tab="proxy" onclick="setTab('proxy')">代理</button>
     <button class="tab" data-tab="auth" onclick="setTab('auth')">登录</button>
   </div>
 
@@ -677,6 +696,28 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
     </div>
 
     <div class="card" style="margin-top:14px">
+      <h2>剧场版</h2>
+      <div class="hint" style="margin-bottom:10px">
+        剧场版是<strong>一次性</strong>任务：推送成功后就不再检查更新，也没有「第几集」的概念。
+        新订阅被标成剧场版时会落到下面这个目录，和追更库分开，方便你按「剧场版」整目录刮削。
+      </div>
+      <label>剧场版下载目录（qBittorrent 侧）</label>
+      <input type="text" id="s_movie_save" placeholder="/media/剧场版/{{dirname}}">
+      <div class="hint" id="s_movie_save_hint">
+        可用变量与保存路径一致：<code>{{dirname}}</code> <code>{{title}}</code> <code>{{filetitle}}</code> <code>{{subgroup}}</code>。
+        默认 <code>/media/剧场版/{{dirname}}</code>，一部剧场版一个文件夹。
+      </div>
+      <label style="margin-top:12px">剧场版重命名模板</label>
+      <input type="text" id="s_movie_rename" placeholder="[{{subgroup}}] {{filetitle}}">
+      <div class="hint" id="s_movie_rename_hint">
+        默认不带季集（<code>[字幕组] 片名</code>）。填了 SxxExx 之类的变量在这里没有意义，但不会报错。
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button onclick="saveSettings()">保存设置</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
       <h2>下载过滤规则（全局默认）</h2>
       <div class="hint" style="margin-bottom:10px">
         这里配一次，所有订阅都会用；新番换季、换压制规格时只改这里，不用每部番单独改。
@@ -711,6 +752,14 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
       <label>允许写入的路径前缀（一行一条）</label>
       <textarea id="s_prefixes" style="min-height:60px" placeholder="/media/新番追更/"></textarea>
       <div class="hint">安全阀：订阅的保存路径必须落在这里面，否则拒绝推送。追更目录默认已放行。</div>
+      <label style="margin-top:12px">bangumi 连接</label>
+      <select id="s_mikanhost" onchange="mkHostChanged()"></select>
+      <input type="text" id="s_mikanhost_custom" style="margin-top:8px;display:none" placeholder="https://mikanime.tv">
+      <div class="hint" id="s_mikanhost_hint">
+        抓订阅、搜番、下封面都走这个站点。默认 <code>https://mikanime.tv</code>；
+        镜像站的页面结构和番剧 id 与主站一致，可以随时切换，切完建议点一次「立即检查」。
+        选「自定义」时填完整地址（含 https://）。
+      </div>
       <div class="row" style="margin-top:14px">
         <button onclick="saveSettings()">保存设置</button>
       </div>
@@ -741,6 +790,53 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
         <button onclick="saveSettings()">保存设置</button>
       </div>
       <div id="tmdbResult" class="hint" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- ---------- 代理 ---------- -->
+  <div class="tabpane" id="tab-proxy" style="display:none">
+    <div class="card">
+      <h2>出口代理</h2>
+      <div class="hint" style="margin-bottom:10px">
+        打开后，抓 mikan RSS/番剧页、查 TMDB、下封面这些<strong>公网请求</strong>走这个代理；
+        局域网地址（如 qBittorrent 的 192.168.x.x）和 127.0.0.1 始终直连，不会绕代理。
+        本机 WebUI 自己的监听端口不受影响。<strong>保存后立即生效</strong>，不用重启。
+      </div>
+      <label class="ckline" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <input type="checkbox" id="s_proxy_on" style="width:auto;margin:0">
+        <span>启用代理</span>
+      </label>
+      <div class="row">
+        <div style="flex:1">
+          <label>协议</label>
+          <select id="s_proxy_proto">
+            <option value="http">HTTP / HTTPS（CONNECT）</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label>端口</label>
+          <input type="number" id="s_proxy_port" min="1" max="65535" placeholder="20170">
+        </div>
+      </div>
+      <label style="margin-top:12px">主机（IP 或域名）</label>
+      <input type="text" id="s_proxy_host" placeholder="192.168.50.17">
+      <div class="row" style="margin-top:12px">
+        <div style="flex:1">
+          <label>用户名（可选）</label>
+          <input type="text" id="s_proxy_user" autocomplete="off" placeholder="留空 = 代理不需要认证">
+        </div>
+        <div style="flex:1">
+          <label>密码（可选）</label>
+          <input type="password" id="s_proxy_pass" autocomplete="new-password" placeholder="留空保持当前值；填 - 清空">
+        </div>
+      </div>
+      <div class="hint" id="s_proxy_hint">当前：未启用</div>
+      <div class="row" style="margin-top:14px">
+        <button class="ghost" onclick="testProxy()" id="btnTestProxy">测试代理</button>
+        <button onclick="saveSettings()">保存设置</button>
+      </div>
+      <div id="proxyResult" class="hint" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -847,11 +943,11 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
     <label>RSS 链接</label>
     <input type="text" id="e_url">
     <div class="row">
-      <div style="flex:1">
+      <div style="flex:1" id="e_season_wrap">
         <label>季度</label>
         <input type="number" id="e_season" min="1">
       </div>
-      <div style="flex:1">
+      <div style="flex:1" id="e_epoff_wrap">
         <label title="字幕组连续编号时用它纠正">剧集偏移</label>
         <input type="number" id="e_epoffset" step="1" title="填 -12 把 E13 写成 E01">
       </div>
@@ -874,7 +970,7 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
     <label>排除规则（一行一条）</label>
     <textarea id="e_exclude" style="min-height:44px" placeholder="留空 = 使用全局默认规则"></textarea>
     <div class="row">
-      <div style="flex:1">
+      <div style="flex:1" id="e_total_wrap">
         <label>总集数（0=不限）</label>
         <input type="number" id="e_total" min="0">
       </div>
@@ -884,6 +980,10 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
     <div class="hint">留空 = 用默认 <code>/media/新番追更/{{dirname}}/Season {{season_n}}</code>（落在 NAS 的 media/新番追更）。<code>{{dirname}}</code> 是去掉「第二季」这类后缀的番名，多季才会进同一个目录。</div>
     <label>重命名模板</label>
     <input type="text" id="e_rename">
+    <div class="chk">
+      <input type="checkbox" id="e_movie" onchange="applyMovieEdit()">
+      <label for="e_movie" style="margin:0">剧场版（一次性下载，不更新、不识别集数）</label>
+    </div>
     <div class="chk">
       <input type="checkbox" id="e_enabled">
       <label for="e_enabled" style="margin:0">启用此订阅</label>
@@ -1277,12 +1377,15 @@ let weekPick = '';      // 当前选中的星期；空串 = 跟随今天
 // 星期三 -> 周三，保证每个都是两个字，宽度一致
 function weekShort(w){ return '周' + w.slice(2); }
 
-// 把 all_subs 按 week_label 分组；没有星期标签的归到「未定」
+// 把 all_subs 按 week_label 分组；没有星期标签的归到「未定」。
+// 剧场版单独一档：它没有星期，混进「未定」会让人以为「还没设星期」。
 function weekGroups(all){
   const g = {};
   WEEK_ORDER.forEach(w=>{ g[w] = []; });
+  g['剧场版'] = [];
   g['未定'] = [];
   (all||[]).forEach(s=>{
+    if(s.movie){ g['剧场版'].push(s); return; }
     const k = WEEK_ORDER.indexOf(s.week_label) >= 0 ? s.week_label : '未定';
     g[k].push(s);
   });
@@ -1301,6 +1404,11 @@ function renderWeekbar(d){
     return '<div class="'+cls+'" onclick="pickWeek(\''+w+'\')" title="'+w+'：'+n+' 个订阅">'
       + '<span class="wl">'+weekShort(w)+'</span><b>'+n+'</b></div>';
   }).join('');
+  if(g['剧场版'].length){
+    const on = (picked === '剧场版') ? ' on' : '';
+    html += '<div class="d mv'+on+'" onclick="pickWeek(\'剧场版\')" title="剧场版：一次性下载，不按星期更新">'
+      + '<span class="wl">剧场</span><b>'+g['剧场版'].length+'</b></div>';
+  }
   if(g['未定'].length){
     const on = (picked === '未定') ? ' on' : '';
     html += '<div class="d und'+on+'" onclick="pickWeek(\'未定\')" title="还没设置更新星期的订阅">'
@@ -1316,7 +1424,9 @@ function renderDayList(d){
   const isToday = (picked === d.today);
 
   // 标题
-  const title = picked === '未定' ? '未定星期' : (isToday ? '今日订阅' : weekShort(picked)+'的订阅');
+  const title = picked === '未定' ? '未定星期'
+              : picked === '剧场版' ? '剧场版（一次性下载）'
+              : (isToday ? '今日订阅' : weekShort(picked)+'的订阅');
   $('dayTitle').textContent = title;
   $('dayCount').textContent = list.length ? (list.length+' 个') : '';
   $('dayBack').style.display = isToday ? 'none' : '';
@@ -1324,8 +1434,10 @@ function renderDayList(d){
   if(!list.length){
     const tip = picked === '未定'
       ? '所有订阅都已经设好更新星期了'
-      : (isToday ? '今天没有更新的订阅<br><span style="font-size:12px">在「订阅」里给番设置更新星期，就会显示在这里</span>'
-                 : weekShort(picked)+'没有需要更新的订阅');
+      : picked === '剧场版'
+        ? '还没有剧场版订阅<br><span style="font-size:12px">在 mikan 的「剧场版」分类里选一部，勾上「这是剧场版」即可</span>'
+        : (isToday ? '今天没有更新的订阅<br><span style="font-size:12px">在「订阅」里给番设置更新星期，就会显示在这里</span>'
+                   : weekShort(picked)+'没有需要更新的订阅');
     $('todayList').innerHTML = '<div class="empty">'+tip+'</div>';
     return;
   }
@@ -1334,12 +1446,15 @@ function renderDayList(d){
     const badge = !s.enabled ? '<span class="pill off">停用</span>'
                 : s.last_error ? '<span class="pill err" title="'+esc(s.last_error)+'">错误</span>'
                 : '<span class="pill on">启用</span>';
+    // 剧场版没有集数进度：显示「已下载 / 等待资源」
+    const meta = s.movie
+      ? '<span>'+(s.movie_done ? '✓ 已下载，不再检查' : '等待资源')+'</span>'
+      : '<span>最高 <b>E'+s.max_episode+'</b></span><span>已推 <b>'+s.pushed+'</b></span>';
     return '<div class="subcard' + (s.enabled?'':' dim') + '">'
       + '<div class="t">'+esc(s.title)+'</div>'
       + '<div class="m">'
       +   (s.subgroup? '<span>'+esc(s.subgroup)+'</span>':'')
-      +   '<span>最高 <b>E'+s.max_episode+'</b></span>'
-      +   '<span>已推 <b>'+s.pushed+'</b></span>'
+      +   meta
       +   badge
       + '</div>'
       + (timeAgo(s.last_run)? '<div class="m"><span>上次检查 '+esc(timeAgo(s.last_run))+'</span></div>':'')
@@ -1586,7 +1701,7 @@ function renderSeason(d){
       const img = it.cover
         ? '<img loading="lazy" src="'+esc(it.cover)+'" alt="">'
         : '<div class="ph">🎬</div>';
-      return '<div class="scard" onclick="mkOpen(\''+esc(it.id)+'\')" title="'+esc(it.title)+'">'
+      return '<div class="scard" onclick="mkOpen(\''+esc(it.id)+'\','+(g.dow === 7 ? 1 : 0)+')" title="'+esc(it.title)+'">'
            + img + '<div class="n">'+esc(it.title)+'</div></div>';
     }).join('');
     h += '<div class="sday'+(g.dow === today ? ' today' : '')+'">'
@@ -1650,7 +1765,10 @@ async function mkSearch(){
   }
 }
 
-async function mkOpen(id){
+// mineHint：1 = 从「剧场版」分档点进来的（g.dow === 7）。
+// mikan 的番剧页本身不写类型，只有季度页的分档才是权威信号，
+// 所以把它一路带到 mkRenderBangumi（见那里的 isMovie 判断）。
+async function mkOpen(id, movieHint){
   $('mkPanel').classList.remove('hidden');
   $('seasonBody').classList.add('hidden');
   $('mkTitle').textContent = '读取番剧页…';
@@ -1658,20 +1776,28 @@ async function mkOpen(id){
   try{
     const d = await (await fetch('/api/mikan/bangumi?id='+encodeURIComponent(id))).json();
     if(!d.ok){ $('mkBody').innerHTML = '<div class="err">'+esc(d.error)+'</div>'; return; }
-    mkRenderBangumi(d.bangumi);
+    mkRenderBangumi(d.bangumi, movieHint);
   }catch(e){ $('mkBody').innerHTML = '<div class="err">出错：'+esc(e)+'</div>'; }
 }
 
-function mkRenderBangumi(b){
+function mkRenderBangumi(b, movieHint){
   const groups = b.groups || [];
-  mkStore = [{rss: b.rss_all, title: b.title, subgroup:'', week: b.week||''}];
-  groups.forEach(g=>mkStore.push({rss:g.rss, title:b.title, subgroup:g.label, week:b.week||''}));
+  // 剧场版三条线索，任一成立即可：从「剧场版」分档进来 / 后端在页面里认出来 /
+  // 用户之前手动勾过（切字幕组时不该把勾选清掉）。
+  const isMovie = !!movieHint || !!b.movie || !!($('movie') && $('movie').checked);
+  mkStore = [{rss: b.rss_all, title: b.title, subgroup:'', week: b.week||'', movie:isMovie}];
+  groups.forEach(g=>mkStore.push({rss:g.rss, title:b.title, subgroup:g.label, week:b.week||'', movie:isMovie}));
 
   const cov = b.cover ? '<img src="'+esc(b.cover)+'" alt="">' : '<div class="ph">🎬</div>';
   let h = '<div class="mkhead">'+cov+'<div><div class="t">'+esc(b.title)+'</div>'
         + '<div class="m">番号 '+esc(b.id)
-        + (b.week ? '　放送 '+esc(b.week) : '')
+        + (isMovie ? '　<b style="color:#2f7d32">剧场版 · 一次性下载</b>' : (b.week ? '　放送 '+esc(b.week) : ''))
         + '　'+groups.length+' 个字幕组</div></div></div>';
+
+  if(isMovie){
+    h += '<div class="hint" style="margin:0 0 10px">这是一部剧场版：选字幕组后只下载一次，之后不再检查更新，'
+       + '也不按集数重命名。落盘目录由「设置 → 下载 → 剧场版」决定。</div>';
+  }
 
   h += '<div class="mkgroup"><div class="l"><b>整部番（不指定字幕组）</b>'
      + '<span>'+esc(b.rss_all)+'</span></div>'
@@ -1699,6 +1825,12 @@ function mkPick(i){
       if(o.value === x.week || o.text === x.week){ sel.value = o.value; break; }
     }
   }
+  // 剧场版：在 mikan 番剧页上就已经知道类型了，这里直接勾上，
+  // 不用等 /api/parse 再判一次（用户在预览返回前就能看到正确状态）。
+  if($('movie')){
+    $('movie').checked = !!x.movie;
+    applyMovieAdd();
+  }
   $('meta').classList.remove('hidden');
   $('seasonWrap').classList.add('hidden');   // 选定后收起当季列表
   preview();                       // 顺手预览一次，确认能抓到条目
@@ -1713,7 +1845,7 @@ async function fillByID(){
   const sg = await askPrompt('可留空（留空 = 全部字幕组）。',
     {title:'字幕组 ID（subgroupid）', value:'583', hint:'ANi=583　LoliHouse=370　六四位元=1243'});
   if(sg === null) return;                 // 第二框点了取消就整体放弃
-  let u = 'https://mikanime.tv/RSS/Bangumi?bangumiId='+encodeURIComponent(id);
+  let u = mkHostValue()+'/RSS/Bangumi?bangumiId='+encodeURIComponent(id);
   if(sg && sg.trim()) u += '&subgroupid='+encodeURIComponent(sg.trim());
   $('rssurl').value = u;
   preview();                              // 拼好就顺手预览，少点一次
@@ -1722,9 +1854,12 @@ async function fillByID(){
 async function preview(){
   const u = $('rssurl').value.trim();
   if(!u){ toast('请先填 RSS 链接', 'err'); return; }
+  // 把当前勾选状态带给后端：勾了剧场版就按剧场版解析（不识别集数），
+  // 没勾则让后端自己判断（三条线索见 handleParse）。
+  const mv = ($('movie') && $('movie').checked) ? 1 : 0;
   $('btnPrev').disabled = true; $('btnPrev').textContent = '抓取中…';
   try{
-    const d = await (await fetch('/api/parse?url='+encodeURIComponent(u))).json();
+    const d = await (await fetch('/api/parse?url='+encodeURIComponent(u)+'&movie='+mv)).json();
     if(!d.ok){ toast('抓取失败：'+d.error, 'err'); return; }
     if(!$('title').value) $('title').value = d.suggest_title;
     if(d.subgroup && !$('subgroup').value) $('subgroup').value = d.subgroup;
@@ -1734,6 +1869,12 @@ async function preview(){
       const n = String(d.guess_season > 0 ? d.guess_season : 1);
       const cur = $('season').value;
       if(cur === '' || cur === autoSeason){ $('season').value = n; autoSeason = n; }
+    }
+    // 剧场版：后端从番剧页认出「放送星期 = 剧场版」，或者条目里根本没有集号，
+    // 这时自动勾上「这是剧场版」。不覆盖用户手动勾选的结果。
+    if(d.movie && $('movie') && !$('movie').checked){
+      $('movie').checked = true;
+      applyMovieAdd();
     }
     $('meta').classList.remove('hidden');
     // mikan 侧番名以卡片/解析结果为准；TMDB 侧用后端识别结果
@@ -1771,12 +1912,14 @@ async function subscribe(){
   if(!u||!title){ toast('RSS 链接和番名都要填', 'err'); return; }
   $('btnSub').disabled = true; $('btnSub').textContent='订阅中…';
   try{
+    const isMovie = $('movie') ? $('movie').checked : false;
     const body = {
       url: u, title: title,
       subgroup: $('subgroup').value.trim(),
-      season: parseInt($('season').value)||1,
-      ep_offset: parseInt($('epoffset') ? $('epoffset').value : 0)||0,
+      season: isMovie ? 1 : (parseInt($('season').value)||1),
+      ep_offset: isMovie ? 0 : (parseInt($('epoffset') ? $('epoffset').value : 0)||0),
       week_label: $('weeklabel').value,
+      movie: isMovie,
       match: $('match').value.split('\n').map(s=>s.trim()).filter(Boolean),
       exclude: $('exclude').value.split('\n').map(s=>s.trim()).filter(Boolean),
       name_source: curNameSrc(),
@@ -1794,6 +1937,21 @@ async function subscribe(){
   finally{ $('btnSub').disabled=false; $('btnSub').textContent='订阅并下载全部剧集'; }
 }
 
+// 剧场版开关：没有季/集/偏移的概念，把这些输入框收起来，减少误填。
+// 不隐藏控件（只 disable + 变灰）会更好吗？——直接隐藏更干净，
+// 提交时按 movie 走 season=1/ep_offset=0 的固定值。
+function applyMovieAdd(){
+  const on = $('movie') ? $('movie').checked : false;
+  const row = $('seasonRow');
+  if(row) row.style.display = on ? 'none' : '';
+  const sh = $('seasonHint');
+  if(sh) sh.style.display = on ? 'none' : '';
+  const btn = $('btnSub');
+  if(btn) btn.textContent = on ? '订阅并下载剧场版' : '订阅并下载全部剧集';
+  const hint = $('movieHint');
+  if(hint) hint.style.color = on ? '#2f7d32' : '';
+}
+
 // 清空新增订阅表单，恢复到刚打开时的样子（保留当季列表与季度选择）
 function resetAddForm(){
   $('meta').classList.add('hidden');
@@ -1807,6 +1965,7 @@ function resetAddForm(){
   if($('weeklabel')) $('weeklabel').value = '';
   if($('match'))     $('match').value = '';
   if($('exclude'))   $('exclude').value = '';
+  if($('movie')){ $('movie').checked = false; applyMovieAdd(); }
   if($('prevInfo'))  $('prevInfo').textContent = '';
   if($('prevTable')) $('prevTable').querySelector('tbody').innerHTML = '';
   if($('tmdbQuery')) $('tmdbQuery').value = '';
@@ -1849,13 +2008,17 @@ async function loadSubs(){
         badge = '0<span class="t"> / '+total+'</span>';
       }
       const badgeCls = 'epbadge' + ((owned===0 && total>0) ? ' z' : '');
+      // 剧场版没有集数角标，改成类型角标：「剧场版」/「剧场版 ✓」
+      const mvTag = s.movie
+        ? '<div class="mvtag" title="剧场版：一次性下载，不会更新">剧场版'+(s.movie_done?' ✓':'')+'</div>'
+        : '';
       // 封面上不放任何文字；只有悬浮时才出现三个按钮
       card.innerHTML =
         '<div class="subcover">'+
           (coverSrc ? '<img src="'+coverSrc+'" alt="" loading="lazy" '+
             'onerror="this.style.display=\'none\';this.parentNode.querySelector(\'.noph\').style.display=\'flex\'">' : '')+
           '<div class="noph" style="display:'+(coverSrc?'none':'flex')+'"><b>🎬</b><span>暂无封面</span></div>'+
-          (badge ? '<div class="'+badgeCls+'" title="已有集数 / 总集数">'+badge+'</div>' : '')+
+          (s.movie ? mvTag : (badge ? '<div class="'+badgeCls+'" title="已有集数 / 总集数">'+badge+'</div>' : ''))+
           '<div class="ov">'+
             '<button class="ib" title="编辑订阅" onclick="event.stopPropagation();editSub(\''+s.id+'\')">'+
               '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.12 2.12 0 0 0-3-3L5 17v3Z"/><path d="M13.5 6.5l3 3"/></svg></button>'+
@@ -1870,6 +2033,32 @@ async function loadSubs(){
       grid.appendChild(card);
     });
   }catch(e){ console.error(e); }
+}
+
+// 编辑弹窗的剧场版开关：藏掉季/集/偏移这些对剧场版没意义的字段，
+// 并把保存路径/重命名的 placeholder 换成剧场版默认值（用户没填时才看得出默认是什么）。
+function applyMovieEdit(){
+  const on = $('e_movie') ? $('e_movie').checked : false;
+  [['e_season_wrap',on],['e_epoff_wrap',on],['e_total_wrap',on]].forEach(([id])=>{
+    const el = $(id);
+    if(el) el.style.display = on ? 'none' : '';
+  });
+  const sb = $('e_skipbackfill');
+  if(sb){
+    const box = sb.closest('.chk');
+    if(box) box.style.display = on ? 'none' : '';
+  }
+  const sp = $('e_savepath');
+  if(sp){
+    const def = on ? (window.__movieSaveDef || '/media/剧场版/{{dirname}}')
+                   : '/media/新番追更/{{dirname}}/Season {{season_n}}';
+    sp.placeholder = '留空 = 用默认 '+def;
+  }
+  const rn = $('e_rename');
+  if(rn){
+    const def = on ? '[{{subgroup}}] {{filetitle}}' : '[{{subgroup}}] {{filetitle}} S{{season}}E{{ep}}';
+    rn.placeholder = '留空 = 用默认 '+def;
+  }
 }
 
 async function editSub(id){
@@ -1894,6 +2083,10 @@ async function editSub(id){
     $('e_rename').value = s.rename_template||'';
     $('e_enabled').checked = !!s.enabled;
     $('e_skipbackfill').checked = !!s.skip_backfill;
+    if($('e_movie')){
+      $('e_movie').checked = !!s.movie;
+      applyMovieEdit();
+    }
     $('e_reset').checked = false;
     fillEditCover(s);
     $('editModal').classList.remove('hidden');
@@ -2137,6 +2330,7 @@ async function saveEdit(){
       save_path: $('e_savepath').value.trim(),
       rename_template: $('e_rename').value.trim(),
       enabled: $('e_enabled').checked,
+      movie: $('e_movie') ? $('e_movie').checked : false,
       skip_backfill: $('e_skipbackfill').checked,
       reset_state: $('e_reset').checked
     };
@@ -2297,6 +2491,27 @@ async function loadSettings(){
     // 全局默认过滤规则
     $('s_match').value = (s.default_match||[]).join('\n');
     $('s_exclude').value = (s.default_exclude||[]).join('\n');
+    // 剧场版默认落盘
+    $('s_movie_save').value = s.movie_save_path || '';
+    $('s_movie_save').placeholder = s.movie_default_save || '/media/剧场版/{{dirname}}';
+    $('s_movie_rename').value = s.movie_rename || '';
+    $('s_movie_rename').placeholder = s.movie_default_rename || '[{{subgroup}}] {{filetitle}}';
+    window.__movieSaveDef = s.movie_default_save_path || '/media/剧场版/{{dirname}}';
+    $('s_movie_rename_hint').innerHTML = '默认不带季集（<code>'+esc(s.movie_default_rename||'')+
+      '</code>）。填了 SxxExx 之类的变量在这里没有意义，但不会报错。';
+    // bangumi 连接
+    mkHostFill(s.mikan_host, s.mikan_hosts||[]);
+    // 代理
+    const px = s.proxy || {};
+    $('s_proxy_on').checked = !!px.enabled;
+    $('s_proxy_proto').value = (px.protocol==='socks5') ? 'socks5' : 'http';
+    $('s_proxy_host').value = px.host || '';
+    $('s_proxy_port').value = px.port || '';
+    $('s_proxy_user').value = px.username || '';
+    $('s_proxy_pass').value = '';
+    $('s_proxy_pass').placeholder = px.password_set ? '已设置，留空则不修改；填 - 清空' : '代理不需要认证就留空';
+    $('s_proxy_hint').textContent = '当前：' + (px.describe || '未启用');
+
     loadAccount();
     $('sf-status').textContent = '检查间隔 '+(s.interval_minutes||60)+' 分钟';
 
@@ -2308,7 +2523,7 @@ async function loadSettings(){
 }
 
 // ============ 设置页二级菜单 ============
-const TABS = ['dl','fetch','tmdb','auth'];
+const TABS = ['dl','fetch','tmdb','proxy','auth'];
 function setTab(name){
   if(TABS.indexOf(name)<0) name='dl';
   TABS.forEach(t=>{
@@ -2481,12 +2696,100 @@ async function testTMDB(){
   finally{ $('btnTestTmdb').disabled=false; $('btnTestTmdb').textContent='测试 TMDB'; }
 }
 
+// ============ bangumi 连接（镜像站选择） ============
+// 候选值由后端 /api/settings 的 mikan_hosts 提供，这里只负责渲染，
+// 避免域名列表在前后端各维护一份、写着写着就不一致。
+let MK_HOSTS = [];
+const MK_CUSTOM = '__custom__';
+
+function mkHostFill(host, hosts){
+  MK_HOSTS = Array.isArray(hosts) ? hosts : [];
+  const sel = $('s_mikanhost');
+  if(!sel) return;
+  sel.innerHTML = MK_HOSTS.map(h=>
+    '<option value="'+esc(h.value || MK_CUSTOM)+'">'+esc(h.label)+'</option>'
+  ).join('');
+  const cur = (host||'').trim();
+  const hit = MK_HOSTS.find(h=>h.value && h.value === cur);
+  if(hit){
+    sel.value = hit.value;
+    $('s_mikanhost_custom').value = '';
+    $('s_mikanhost_custom').style.display = 'none';
+  } else {
+    // 空配置 = 用内置默认（第一项）；否则视为自定义地址
+    if(!cur){
+      sel.value = MK_HOSTS.length ? (MK_HOSTS[0].value || MK_CUSTOM) : MK_CUSTOM;
+      $('s_mikanhost_custom').style.display = (sel.value===MK_CUSTOM) ? '' : 'none';
+      $('s_mikanhost_custom').value = '';
+    } else {
+      const ci = MK_HOSTS.findIndex(h=>!h.value);
+      if(ci >= 0) sel.value = MK_CUSTOM; else sel.value = MK_HOSTS.length ? (MK_HOSTS[0].value||MK_CUSTOM) : MK_CUSTOM;
+      $('s_mikanhost_custom').value = cur;
+      $('s_mikanhost_custom').style.display = '';
+    }
+  }
+  mkHostHint();
+}
+
+function mkHostChanged(){
+  const sel = $('s_mikanhost');
+  const custom = $('s_mikanhost_custom');
+  const isCustom = (sel.value === MK_CUSTOM) || !sel.value;
+  custom.style.display = isCustom ? '' : 'none';
+  if(isCustom) custom.focus();
+  mkHostHint();
+}
+
+// 当前选中的地址：内置项直接用 value，自定义项取输入框（空=用默认主站）
+function mkHostValue(){
+  const sel = $('s_mikanhost');
+  if(!sel) return '';
+  if(sel.value === MK_CUSTOM || !sel.value) return $('s_mikanhost_custom').value.trim();
+  return sel.value;
+}
+
+function mkHostHint(){
+  const sel = $('s_mikanhost');
+  const box = $('s_mikanhost_hint');
+  if(!sel || !box) return;
+  const hit = MK_HOSTS.find(h=>h.value === sel.value);
+  const base = '抓订阅、搜番、下封面都走这个站点。选「自定义」时填完整地址（含 https://）。';
+  box.innerHTML = (hit && hit.desc ? esc(hit.desc)+'。' : '') + base;
+}
+
+async function testProxy(){
+  const btn = $('btnTestProxy');
+  btn.disabled = true; btn.textContent = '测试中…';
+  const box = $('proxyResult');
+  box.innerHTML = '';
+  try{
+    const body = {
+      proxy_enabled: $('s_proxy_on').checked,
+      proxy_protocol: $('s_proxy_proto').value,
+      proxy_host: $('s_proxy_host').value.trim(),
+      proxy_port: parseInt($('s_proxy_port').value)||0,
+      proxy_username: $('s_proxy_user').value.trim(),
+      proxy_password: $('s_proxy_pass').value,
+      mikan_host: mkHostValue()
+    };
+    const d = await (await apiPost('/api/settings/proxy/test', body)).json();
+    if(d.ok){
+      box.innerHTML = '<span class="ok">✓ '+esc(d.proxy||'')+' → '+esc(d.target||'')+
+        '　HTTP '+d.status+'　'+d.latency_ms+' ms</span>';
+    } else {
+      box.innerHTML = '<span class="err">✗ '+esc(d.error||'测试失败')+'</span>';
+    }
+  }catch(e){ box.innerHTML = '<span class="err">出错：'+esc(String(e))+'</span>'; }
+  finally{ btn.disabled=false; btn.textContent='测试代理'; }
+}
+
 // 把提示写到「当前所在分页」的结果框里，避免写到看不见的地方
 function settingsResultBox(){
   let tab = 'dl';
   try{ tab = localStorage.getItem('ag_settab') || 'dl'; }catch(e){}
   if(tab === 'tmdb') return $('tmdbResult');
   if(tab === 'fetch') return $('fetchResult');
+  if(tab === 'proxy') return $('proxyResult');
   return $('setResult');
 }
 
@@ -2515,13 +2818,26 @@ async function saveSettings(){
       library_root: $('s_library') ? $('s_library').value.trim() : '',
       cover_source: $('s_coversrc') ? $('s_coversrc').value : 'mikan',
       default_match: $('s_match').value.split('\n').map(s=>s.trim()).filter(Boolean),
-      default_exclude: $('s_exclude').value.split('\n').map(s=>s.trim()).filter(Boolean)
+      default_exclude: $('s_exclude').value.split('\n').map(s=>s.trim()).filter(Boolean),
+      // 剧场版默认落盘
+      movie_save_path: $('s_movie_save').value.trim(),
+      movie_rename: $('s_movie_rename').value.trim(),
+      // bangumi 连接：选「自定义」时用输入框里的地址
+      mikan_host: mkHostValue(),
+      // 代理
+      proxy_enabled: $('s_proxy_on').checked,
+      proxy_protocol: $('s_proxy_proto').value,
+      proxy_host: $('s_proxy_host').value.trim(),
+      proxy_port: parseInt($('s_proxy_port').value)||0,
+      proxy_username: $('s_proxy_user').value.trim(),
+      proxy_password: $('s_proxy_pass').value
     };
     const d = await (await apiPost('/api/settings/save', body)).json();
     if(d.ok){
       box.innerHTML = '<span class="ok">✓ '+esc(d.message)+'</span>';
       $('s_apikey').value = '';
       $('s_tmdbkey').value = '';
+      $('s_proxy_pass').value = '';
       loadSettings();
     } else {
       box.innerHTML = '<span class="err">✗ '+esc(d.error)+'</span>';

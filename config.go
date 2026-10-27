@@ -96,6 +96,36 @@ type Subscription struct {
 	//
 	// 为空 = 还没解析过，用 Title 当目录名（老行为）。
 	DirName string `json:"dir_name"`
+
+	// Movie 标记这是一条「剧场版」订阅（用户 2026-10-27 要求）。
+	//
+	// 剧场版与 TV 番的三点根本区别，全部由这个标记驱动：
+	//  1. 不做集数识别：标题里没有「- 03」这类集号，硬抽会把
+	//     「[BDRemux 1080p]」里的数字当成集数；
+	//  2. 只推一次：推成功一条就收工，不再按小时轮询更新
+	//     （state.SubState.MovieDone 记账）；
+	//  3. 落盘位置单独一套：默认 /media/剧场版/<番名>，与追更库分开，
+	//     对应模板见 Config.MovieSavePath / Config.MovieRename。
+	Movie bool `json:"movie,omitempty"`
+
+	// NoUpdate 表示这条订阅下过一次就不再更新（用户 2026-10-27 要求）。
+	//
+	// 与 Movie 的关系：Movie 蕴含 NoUpdate，反之不然。
+	//  - 剧场版：Movie=true，落盘去剧场版目录、不识别集数；
+	//  - 连载中的番想「下完这集就停」：NoUpdate=true，目录和集数识别照旧。
+	// 行为判断统一用 NoUpdateNow()，不要直接读 Movie（否则 NoUpdate 会失效）。
+	NoUpdate bool `json:"no_update,omitempty"`
+}
+
+// NoUpdateNow 报告这条订阅是否「一次性」：推成功一条就不再检查更新。
+//
+// 剧场版天然是一次性的；普通番也可以手动勾成一次性。
+// 所有「要不要停更 / 要不要跳过基线 / 要不要补推历史」的判断都应走它。
+func (s *Subscription) NoUpdateNow() bool {
+	if s == nil {
+		return false
+	}
+	return s.Movie || s.NoUpdate
 }
 
 type Config struct {
@@ -187,6 +217,25 @@ type Config struct {
 	// 总集数写入 Subscription.EpTotal，多季番因此显示错（幼女战记 2 季各 12 集，
 	// 第 2 季却显示 24）。改为按季取集数后，历史值无法推算，只能清空重算。
 	EpTotalMigrated bool `json:"ep_total_migrated"`
+
+	// MovieSavePath 是**剧场版订阅**的默认保存路径模板（设置 → 下载）。
+	//
+	// 与追更库分开是用户明确要求：剧场版是整部电影一个文件，
+	// 混在 /media/新番追更/<番名>/Season N 里既不对也应被刮削器当成剧集。
+	// 留空 = 用内置默认 /media/剧场版/{{dirname}}。
+	MovieSavePath string `json:"movie_save_path"`
+
+	// MovieRename 是剧场版订阅的默认重命名模板（同样在设置 → 下载里改）。
+	//
+	// 不能沿用 TV 的 "[{{subgroup}}] {{filetitle}} S{{season}}E{{ep}}"：
+	// 剧场版 ep 恒为 0，渲染出来是 "S01E00"，所有电影都变成"第0集"。
+	// 留空 = 用内置默认 "[{{subgroup}}] {{filetitle}}"。
+	MovieRename string `json:"movie_rename"`
+
+	// Proxy 是出站代理（设置 → 代理）。
+	// 影响 RSS、mikan 页面、封面、TMDB、qBittorrent 全部出站请求，
+	// 见 proxy.go 顶部的说明（改完即时生效，不需要重启）。
+	Proxy ProxySettings `json:"proxy"`
 }
 
 // PathMount 描述「qBittorrent 侧的根目录 → 本机挂载点」的一条映射。
@@ -228,7 +277,97 @@ const (
 	// 注意必须带尾斜杠——isUnderPrefix 是整段比较，不带斜杠会把
 	// 「新番追更备份」这类兄弟目录一起放行。
 	defaultAllowPrefix = "/media/新番追更/"
+
+	// 剧场版正式库：与追更库并列，剧场版订阅默认落在这里（用户 2026-10-27 指定）。
+	// {{dirname}} 与追更库同义（去季后缀的番名），一部电影一个目录。
+	defaultMovieSavePath = "/media/剧场版/{{dirname}}"
+	// 剧场版文件名不带集号：ep 恒为 0，套 TV 模板会得到 "S01E00"。
+	defaultMovieRename = "[{{subgroup}}] {{filetitle}}"
+	// 剧场版目录的 allow 前缀。默认白名单里包含它（见 DefaultAllowPrefixes）。
+	defaultMovieAllowPrefix = "/media/剧场版/"
 )
+
+// mikanMirrors 是设置页「bangumi 连接」下拉里自带的几个站点。
+//
+// 只列真实存在、且页面结构相同（/Home/Bangumi/...、/RSS/Bangumi?...）的域名：
+// mikan 换过一次主域名（mikanani.me → mikanime.tv），旧域名长期并行可用，
+// 国内网络下两者的可达性还不一样，所以值得让用户自己选。
+// 第四个选项是「自定义」，见 ui.go 里的 s_mikanhost_other。
+var mikanMirrors = []struct {
+	Host string
+	Note string
+}{
+	{"https://mikanime.tv", "官方主站"},
+	{"https://mikanani.me", "旧域名（常作为备用）"},
+}
+
+// MovieSavePathValue 返回生效的剧场版保存路径模板（已去尾斜杠）。
+func (c *Config) MovieSavePathValue() string {
+	if c != nil {
+		if s := strings.TrimRight(strings.TrimSpace(c.MovieSavePath), "/"); s != "" {
+			return s
+		}
+	}
+	return defaultMovieSavePath
+}
+
+// MovieRenameValue 返回生效的剧场版重命名模板。
+func (c *Config) MovieRenameValue() string {
+	if c != nil {
+		if s := strings.TrimSpace(c.MovieRename); s != "" {
+			return s
+		}
+	}
+	return defaultMovieRename
+}
+
+// applyMovieDefaults 把「剧场版」专属的默认模板套到一条订阅上。
+//
+// 为什么必须单独抽出来：Config.applyDefaults 会在加载配置时做一次，
+// 但新增/编辑订阅时只调了 sub.applyDefaults()（它不知道 Config），
+// 于是新建的剧场版订阅会带着 TV 默认值（/media/新番追更/.../Season N、
+// 带 S{{season}}E{{ep}} 的文件名）落库 —— 2026-10-27 冒烟测试实测踩到。
+//
+// 只改「仍是默认值」的字段：用户手写过的模板一律不动。
+func (s *Subscription) applyMovieDefaults(c *Config) {
+	if s == nil || !s.Movie {
+		return
+	}
+	if sameSavePath(s.SavePath, defaultSavePath) {
+		s.SavePath = c.MovieSavePathValue()
+	}
+	if strings.TrimSpace(s.RenameTemplate) == defaultRename {
+		s.RenameTemplate = c.MovieRenameValue()
+	}
+}
+
+// MovieAllowPrefix 返回剧场版落盘目录对应的 allow 前缀。
+//
+// 从模板里取「第一个占位符之前」的那段静态目录：
+// "/media/剧场版/{{dirname}}" → "/media/剧场版/"。
+// 用户在设置里把剧场版目录改到别处时，白名单也要跟着变，
+// 否则默认路径会被自己的安全阀（ValidateSavePath）拦下来。
+func (c *Config) MovieAllowPrefix() string {
+	return templateStaticPrefix(c.MovieSavePathValue())
+}
+
+// templateStaticPrefix 取路径模板里不含占位符的最长目录前缀（带尾斜杠）。
+// 例："/media/剧场版/{{dirname}}" → "/media/剧场版/"；"/media/x" → "/media/x/"。
+func templateStaticPrefix(tpl string) string {
+	t := strings.TrimSpace(tpl)
+	if i := strings.Index(t, "{{"); i >= 0 {
+		if j := strings.LastIndex(t[:i], "/"); j >= 0 {
+			t = t[:j+1]
+		} else {
+			return ""
+		}
+	}
+	t = strings.TrimRight(t, "/")
+	if t == "" || !strings.HasPrefix(t, "/") {
+		return ""
+	}
+	return t + "/"
+}
 
 // 默认过滤规则：只留 1080p 及以上的正片，排除 720p 与合集。
 // 特意写得宽一些——早期版本默认带 `mp4|MP4`，遇到 HEVC/MKV 源会把整部番
@@ -386,6 +525,25 @@ func (c *Config) applyDefaults() {
 		c.DirNameMigrated = true
 	}
 
+	// 白名单自愈：只要用户显式写过 allow 前缀（非空），就确保
+	// 「追更库」与「剧场版库」两条都在里面。
+	//
+	// 为什么要在这里补：剧场版落盘目录是 2026-10-27 新增的，
+	// 老配置的 allow_write_prefixes 里自然没有它，而安全阀要求
+	// 每条落盘路径都必须在白名单内——不补就会「剧场版订阅永远推送被拒」，
+	// 且日志里的原因看起来像是用户自己配错了。
+	// 留空（=用内置默认）时不动：DefaultAllowPrefixes 已经包含两个目录。
+	if len(c.AllowWritePrefixes) > 0 {
+		for _, p := range []string{defaultAllowPrefix, c.MovieAllowPrefix()} {
+			if p == "" {
+				continue
+			}
+			if !hasPrefixItem(c.AllowWritePrefixes, p) {
+				c.AllowWritePrefixes = append(c.AllowWritePrefixes, p)
+			}
+		}
+	}
+
 	// 封面来源默认 mikan：TMDB 多季合一条目只有一张海报，订阅页分不清第几季。
 	if strings.TrimSpace(c.CoverSource) == "" {
 		c.CoverSource = "mikan"
@@ -412,8 +570,27 @@ func (c *Config) applyDefaults() {
 		c.EpTotalMigrated = true
 	}
 
+	// 剧场版默认模板：留空就用内置默认（用户可在设置 → 下载里改）。
+	c.MovieSavePath = strings.TrimRight(strings.TrimSpace(c.MovieSavePath), "/")
+	if c.MovieSavePath == "" {
+		c.MovieSavePath = defaultMovieSavePath
+	}
+	c.MovieRename = strings.TrimSpace(c.MovieRename)
+	if c.MovieRename == "" {
+		c.MovieRename = defaultMovieRename
+	}
+
+	// 代理归一：协议白名单、端口范围、主机去空白/去协议前缀。
+	c.Proxy.normalize()
+
 	for i := range c.Subscriptions {
-		c.Subscriptions[i].applyDefaults()
+		s := &c.Subscriptions[i]
+		s.applyDefaults()
+		// 剧场版订阅的默认模板与 TV 不同：
+		//   - TV 模板带 Season/集号，剧场版套上去会得到 "S01E00"；
+		//   - 落盘目录也不同（/media/剧场版 而不是追更库）。
+		// 只替换「仍是默认值」的，用户手写过的模板一律不碰。
+		s.applyMovieDefaults(c)
 	}
 }
 

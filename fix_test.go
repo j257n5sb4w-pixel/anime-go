@@ -60,13 +60,14 @@ func TestValidateSavePathPrefixWithoutTrailingSlash(t *testing.T) {
 }
 
 func TestValidateSavePathDenyListBypass(t *testing.T) {
-	// 即使把正式库写进 allow，deny 列表也必须拦住
+	// 2026-10-27 起 /media/剧场版 是剧场版的正式落盘目录，不再是 deny 名单：
+	// 这条用例改成验证「deny 名单本身还在生效」——用一个仍在名单里的前缀。
 	allow := []string{"/media/"}
 
 	bad := []string{
-		"/media/剧场版/某剧场版",
-		"/media/../media/剧场版/x", // 穿越绕过 deny
-		"/downloads/../media/剧场版/x",
+		"/media/.anime-go-deny/x",
+		"/media/../media/.anime-go-deny/x", // 穿越绕过 deny
+		"/downloads/../media/.anime-go-deny/x",
 	}
 	for _, p := range bad {
 		if err := ValidateSavePath(p, allow); err == nil {
@@ -81,6 +82,10 @@ func TestValidateSavePathDenyListBypass(t *testing.T) {
 	// 2026-10-26 起「新番追更」已解禁，写进 allow 后应当放行
 	if err := ValidateSavePath("/media/新番追更/某番/Season 1", allow); err != nil {
 		t.Errorf("新番追更已解禁，不应被拒: %v", err)
+	}
+	// 剧场版目录同样已解禁
+	if err := ValidateSavePath("/media/剧场版/某剧场版", allow); err != nil {
+		t.Errorf("剧场版目录已解禁，不应被拒: %v", err)
 	}
 }
 

@@ -36,7 +36,8 @@ const (
 	tmdbPosterSize = "w342"
 )
 
-var tmdbClient = &http.Client{Timeout: 20 * time.Second}
+// tmdbClient 走 proxy.go 的共享 Transport：设置里的代理对它即时生效。
+var tmdbClient = newHTTPClient(20 * time.Second)
 
 var (
 	// 从标题里剥掉季数标记，用于搜索

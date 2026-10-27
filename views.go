@@ -205,6 +205,10 @@ func (s *server) handleHome(w http.ResponseWriter, r *http.Request) {
 		LastRun    string `json:"last_run"`
 		LastError  string `json:"last_error"`
 		TodayNew   int    `json:"today_new"` // 今天新增集数（本轮推送数）
+		// Movie / MovieDone：剧场版订阅没有「星期」，也不进周历。
+		// 界面上要单独标出来（一次性任务，下完就不再更新）。
+		Movie     bool `json:"movie"`
+		MovieDone bool `json:"movie_done"`
 	}
 
 	all := []HomeSub{}
@@ -221,14 +225,21 @@ func (s *server) handleHome(w http.ResponseWriter, r *http.Request) {
 		if label == "" {
 			label = "未定"
 		}
+		// 剧场版不属于任何星期：给它一个固定标签，免得被按
+		// 「上次运行时间」推成某个星期几、进而混进周历和「今日订阅」。
+		if sub.Movie {
+			label = "剧场版"
+		}
 
 		item := HomeSub{
 			ID: sub.ID, Title: sub.Title, Subgroup: sub.Subgroup,
 			MaxEpisode: st.MaxEpisode, Pushed: st.Pushed,
 			Enabled:   sub.Enabled,
 			WeekLabel: label,
-			IsToday:   label == names[weekday],
+			IsToday:   !sub.Movie && label == names[weekday],
 			LastError: st.LastError,
+			Movie:     sub.Movie,
+			MovieDone: st.MovieDone,
 		}
 		if !st.LastRun.IsZero() {
 			// 给前端 RFC3339，让它按浏览器本地时区显示成「刚刚 / 3 分钟前」。
@@ -244,6 +255,9 @@ func (s *server) handleHome(w http.ResponseWriter, r *http.Request) {
 	// 本周每天各有多少订阅，供侧栏小日历用
 	weekCount := map[string]int{}
 	for _, it := range all {
+		if it.Movie {
+			continue // 剧场版不进周历
+		}
 		if it.WeekLabel != "未定" {
 			weekCount[it.WeekLabel]++
 		}

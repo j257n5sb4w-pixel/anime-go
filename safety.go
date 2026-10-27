@@ -116,9 +116,14 @@ func ValidateSavePath(p string, prefixes []string) error {
 	// /media/新番追更（qB 容器同时挂了 /volume1/dl→/downloads 与
 	// /volume1/media→/media），因此这里**解除**了对该目录的全局禁令——
 	// 它的保护改由 allow 前缀（必须显式写成 /media/新番追更/）承担。
-	// 「剧场版」是不归追更管的正式库，仍然一律拒绝。
+	//
+	// 2026-10-27 变更：剧场版与追更分家，剧场版落到 /media/剧场版/<番名>。
+	// 该目录原来在这份 deny 列表里（「不归追更管的正式库，一律拒绝」），
+	// 现在由剧场版订阅合法写入，同样改为由 allow 前缀承担保护——
+	// 见 defaultMovieAllowPrefix / Config.MovieAllowPrefix。
+	// deny 机制保留下来：将来若出现「绝不允许程序写入」的目录，往这里加即可。
 	denyPrefixes := []string{
-		"/media/剧场版",
+		"/media/.anime-go-deny",
 	}
 
 	allowed := prefixes
@@ -136,7 +141,7 @@ func ValidateSavePath(p string, prefixes []string) error {
 		// 命中允许前缀后，再检查是否落在 deny 列表里
 		for _, d := range denyPrefixes {
 			if isUnderPrefix(clean, d) {
-				return fmt.Errorf("拒绝写入正式库路径 %s（需在代码白名单里显式解除）", clean)
+				return fmt.Errorf("拒绝写入受保护路径 %s（需在代码白名单里显式解除）", clean)
 			}
 		}
 		return nil
@@ -146,9 +151,13 @@ func ValidateSavePath(p string, prefixes []string) error {
 
 // DefaultAllowPrefixes 返回内置默认允许前缀。
 //
-// 只放「追更」目录：2026-10-26 起追更直接落到正式库
-// /media/新番追更/，老的 /downloads/anime-go/ 不再默认放行
-// （用户要保留老位置时，自己在设置的 allow 前缀里写出来）。
+// 两条并列的正式库：
+//   - /media/新番追更/  追更（TV 番，按季分目录）
+//   - /media/剧场版/    剧场版（一部电影一个目录，用户 2026-10-27 要求）
+//
+// 只放「追更」目录的老规则从 2026-10-26 起改成直接落正式库；
+// 老的 /downloads/anime-go/ 不再默认放行（要保留老位置时，
+// 用户自己在设置的 allow 前缀里写出来）。
 func DefaultAllowPrefixes() []string {
-	return []string{defaultAllowPrefix}
+	return []string{defaultAllowPrefix, defaultMovieAllowPrefix}
 }

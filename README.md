@@ -20,6 +20,8 @@
 
 - **订阅管理**：粘贴 mikan RSS 地址即可；支持从 mikan 番剧页搜索、按季度浏览、一键订阅。
 - **集数识别**：内置 20+ 条命名规则的解析器，覆盖 `- 03`、`EP10`、`09v2`、`(ABEMA 1920x1080)` 等真实字幕组写法，并单独识别剧场版（`劇場版` / `映画` / `BDRemux` / `BDMV`）。
+- **剧场版**：从 mikan 当季列表的「剧场版」分档点进来，订阅会自动标成「一次性下载」——不做集数识别、推一次就收工，落到单独的电影目录（默认 `/media/剧场版/<番名>`）。
+- **多站点 / 出站代理**：mikan 站点可选官方主站、备用域名或自定义镜像；抓取与 TMDB 请求可走 HTTP/HTTPS/SOCKS5 代理（支持账号密码），局域网地址自动直连。
 - **过滤规则**：`match` / `exclude` 正则，支持全局默认规则 + 单订阅覆盖，换季不用逐番改。
 - **路径与命名模板**：`save_path` / `rename_template` 支持变量替换，多季自动落进同一个番名目录、各自建 `Season N`。
 - **去重与基线**：按「订阅 + 集号」记账，已推过的集数不会重复推送；首次订阅可选「只建基线不回溯」。
@@ -51,7 +53,7 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o anime-go .
 go test ./...
 ```
 
-默认跑 62 个用例，覆盖集数解析、季号/偏移、路径渲染、清理匹配、鉴权矩阵、qB 路径映射等历史踩坑点；另有 5 个会打外网的 mikan 用例，需要 `go test -tags nettest` 才运行。
+默认跑 66 个用例，覆盖集数解析、季号/偏移、路径渲染、清理匹配、鉴权矩阵、qB 路径映射等历史踩坑点；另有 5 个会打外网的 mikan 用例，需要 `go test -tags nettest` 才运行。
 
 ## 快速开始
 
@@ -108,11 +110,14 @@ sudo systemctl enable --now anime-go
 | `dry_run` | `false` | 全局试运行开关，`-dry` 会覆盖它 |
 | `state_file` | `state.json` | 运行状态：已推送集数、基线 |
 | `log_file` | `anime-go.log` | 日志文件 |
-| `mikan_host` | `https://mikanime.tv` | mikan 站点地址 |
+| `mikan_host` | `https://mikanime.tv` | bangumi（mikan）站点地址，可填任意镜像 |
+| `movie_save_path` | `/media/剧场版/{{dirname}}` | 剧场版落盘目录模板 |
+| `movie_rename` | `[{{subgroup}}] {{filetitle}}` | 剧场版文件名模板（不含 SxxExx） |
+| `proxy` | 关闭 | 出站代理，见下方「出站代理」 |
 | `tmdb_key` | 空 | TMDB v3 API Key，留空则不抓 TMDB 封面 |
 | `tmdb_host` | `https://api.tmdb.org` | TMDB API 域名 |
 | `library_root` | `/media/新番追更` | 追更库根目录（qB 侧路径），用于解析同名番名目录 |
-| `allow_write_prefixes` | `["/media/新番追更/"]` | 允许写入的路径前缀白名单，**必须带尾斜杠** |
+| `allow_write_prefixes` | `["/media/新番追更/", "/media/剧场版/"]` | 允许写入的路径前缀白名单，**必须带尾斜杠** |
 | `mounts` | `[{qbit:/media, local:/mnt/media}]` | qB 侧路径 → 本机挂载点，支持多条，最长前缀优先 |
 | `session_ttl_minutes` | `120` | 登录有效期；`-1` 永久，`0` 关浏览器即失效 |
 | `default_match` / `default_exclude` | `1080p+`、排除 `720p` 与 `合集` | 全局默认过滤规则 |
@@ -155,7 +160,54 @@ sudo systemctl enable --now anime-go
 
 其他常用字段：`ep_patterns`（自定义集数正则，第一个分组为集数）、`total_episodes`（上限，0 = 不限）、`ep_offset`（集号偏移，第二季接续第一季编号时填 `-12` 之类）、`skip_backfill`（首次订阅只建基线不下载）。
 
+### 剧场版订阅
+
+```json
+{
+  "id": "ani-4122",
+  "title": "机动战士高达 闪光的哈萨维 喀耳刻的魔女",
+  "url": "https://mikanime.tv/RSS/Bangumi?bangumiId=4122&subgroupid=583",
+  "movie": true,
+  "season": 1,
+  "enabled": true,
+  "save_path": "/media/剧场版/{{dirname}}",
+  "rename_template": "[{{subgroup}}] {{filetitle}}"
+}
+```
+
+`"movie": true` 改变三件事：
+
+1. **不识别集数**——RSS 标题里的 `[2026][Movie][1080p]` 不会被当成第 2026 集，集号恒为 0；
+2. **不做后续更新**——推送成功后记 `movie_done`，之后每小时检查都跳过它（`no_update` 是它的显式等价开关）；
+3. **单独的落盘目录与文件名**——默认 `/media/剧场版/<番名>` + `[字幕组] 番名`，不含 `SxxExx`。
+
+在 Web UI 里从 mikan 当季列表的「剧场版」分档点进去，`movie` 会自动勾上；
+想重下一次（比如 1080p 换 4K）就在订阅编辑里勾「重置状态并重推」，
+或把 `movie_done` 抹掉——程序不会自己重推，这是刻意的。
+
+### 出站代理
+
+```json
+"proxy": {
+  "enabled": true,
+  "protocol": "http",
+  "host": "192.168.50.17",
+  "port": 20170,
+  "username": "",
+  "password": ""
+}
+```
+
+- `protocol` 支持 `http` / `https` / `socks5`；`username`/`password` 留空表示免认证。
+- 生效范围：mikan（RSS / 番剧页 / 封面）、TMDB，**不含 qBittorrent**（它通常就在内网，没必要绕）。
+- 目标地址是局域网（`127.0.0.1` / `10.` / `172.16-31.` / `192.168.` / `.local`）时自动直连，
+  所以开了代理也不会把 qB、NAS 的请求绕出去。
+- Web UI 的「设置 → 代理」可以改这些值并一键「测试代理」（会真的走一次 mikan 请求）。
+
+
 ## Web UI
+
+设置页分五个分栏：**下载**（qB 连接、挂载映射、追更/剧场版目录）、**抓取**（检查间隔、bangumi 站点、写入白名单）、**TMDB**（Key 与封面来源）、**代理**（协议/地址/端口/账号密码 + 连通性测试）、**登录**（账号、API Key、会话有效期）。
 
 | 页面 | 作用 |
 |---|---|

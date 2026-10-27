@@ -47,6 +47,14 @@ func main() {
 
 	app := NewApp(cfg, *cfgPath)
 
+	// 出站代理：登录/抓取/推送全部走 proxy.go 的共享 Transport，
+	// 启动时先把配置里的代理装进原子变量（之后保存设置会热切换）。
+	if err := ApplyProxy(cfg.Proxy); err != nil {
+		app.log.Printf("⚠ 代理配置无效，已按直连运行: %v", err)
+	} else if cfg.Proxy.Enabled {
+		app.log.Printf("出站代理: %s", cfg.Proxy.Describe())
+	}
+
 	// -reset：重建基线。必须在服务停止后运行，否则旧进程退出时会回写覆盖。
 	if *resetBase {
 		if isServiceRunning() {

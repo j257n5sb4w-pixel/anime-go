@@ -89,6 +89,32 @@ func (s *server) handleParse(w http.ResponseWriter, r *http.Request) {
 		tmdbErr = "未配置 TMDB API Key"
 	}
 
+	// 剧场版判定：三条线索取「或」。
+	//
+	//  1. 前端 hint（?movie=1）：用户是从季度页的「剧场版」分档点进来的，
+	//     这是最权威的信号——mikan 的番剧页本身不写类型，「放送日期」那栏
+	//     对剧场版也只写「星期日」（2026-10-27 实测），不能作为依据；
+	//  2. 番剧页认出来的（放送日期写「剧场版」/OVA，或标题带关键词）；
+	//  3. 兜底：RSS 里所有条目都抽不出集号，且标题像剧场版。
+	movie := strings.TrimSpace(r.URL.Query().Get("movie")) == "1"
+	if !movie {
+		if m := reBangumi.FindStringSubmatch(raw); len(m) > 1 {
+			if b, err := MikanBangumiByID(s.app.cfg, m[1]); err == nil && b != nil {
+				movie = b.Movie
+			}
+		}
+	}
+	if !movie && len(items) > 0 {
+		allNoEp := true
+		for _, it := range items {
+			if ExtractEpisode(it.Title, tmp.EpPatterns) > 0 {
+				allNoEp = false
+				break
+			}
+		}
+		movie = allNoEp && IsMovie(suggest+" "+feedTitle)
+	}
+
 	writeJSON(w, 200, map[string]any{
 		"ok":            true,
 		"feed_title":    feedTitle,
@@ -97,10 +123,12 @@ func (s *server) handleParse(w http.ResponseWriter, r *http.Request) {
 		// 从番名猜季度（「第二季」→2），认不出返回 0，前端按 1 处理。
 		// 只是给表单一个默认值，用户随时可以改（「第贝塔季」这种猜不出来）。
 		"guess_season": GuessSeasonFromTitle(suggest),
-		"count":        len(rows),
-		"items":        rows,
-		"tmdb":         tmdb,
-		"tmdb_error":   tmdbErr,
+		// 剧场版：前端据此自动勾上「这是剧场版（一次性下载）」
+		"movie":      movie,
+		"count":      len(rows),
+		"items":      rows,
+		"tmdb":       tmdb,
+		"tmdb_error": tmdbErr,
 	})
 }
 
@@ -143,6 +171,9 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		// DirName：番名目录名。留空则由程序扫磁盘解析（复用同名目录）。
 		// 允许显式指定，是为了处理「手动建的目录名跟番名对不上」这种边角情况。
 		DirName string `json:"dir_name"`
+		// Movie：这条订阅是剧场版（一次性下载，见 Subscription.Movie 的说明）。
+		// 前端从 mikan 的「剧场版」分档点进来时自动带上。
+		Movie bool `json:"movie"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"ok": false, "error": "请求体解析失败: " + err.Error()})
@@ -157,6 +188,10 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if req.Season <= 0 {
 		req.Season = 1
 	}
+	if req.Movie {
+		// 剧场版没有季度：统一记 1，免得界面上出现「剧场版 第 2 季」这种怪东西。
+		req.Season = 1
+	}
 
 	id := "sub-" + sha1Hex(req.URL)[:8]
 	if m := reBangumi.FindStringSubmatch(req.URL); len(m) > 1 {
@@ -169,14 +204,22 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// （同一 bangumiId 里既有第 1 季又有第 2 季的资源），
 	// 用户明确要求「先订第 2 季、后订第 1 季」也要能用。
 	// 只按 URL 判重会把他挡在门外（实测踩到过）。
+	//
+	// 剧场版例外：季度恒为 1，同一条目重复订阅没有意义（同一部电影不会
+	// 有「第二季」），所以只按 URL 判重，并且直接复用已有订阅的 ID。
 	s.app.mu.Lock()
 	idTaken := false
 	for _, x := range s.app.cfg.Subscriptions {
 		if x.ID == id {
 			idTaken = true
 		}
-		if x.URL == req.URL && x.Season == req.Season {
+		if x.URL == req.URL && (req.Movie || x.Season == req.Season) {
 			s.app.mu.Unlock()
+			if req.Movie {
+				writeJSON(w, 409, map[string]any{"ok": false,
+					"error": "该剧场版已在订阅列表中"})
+				return
+			}
 			writeJSON(w, 409, map[string]any{"ok": false,
 				"error": fmt.Sprintf("该 RSS 的第 %d 季已在订阅列表中", req.Season)})
 			return
@@ -202,6 +245,7 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		MikanName:      strings.TrimSpace(req.MikanName),
 		EpOffset:       req.EpOffset,
 		DirName:        strings.TrimSpace(req.DirName),
+		Movie:          req.Movie,
 	}
 	if req.Enabled != nil {
 		sub.Enabled = *req.Enabled
@@ -246,6 +290,9 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sub.applyDefaults()
+	// 剧场版要换成自己那套默认模板（否则会带着 TV 的 Season/SxxExx 落库）。
+	// 必须在 applyDefaults 之后：它才有「留空 → TV 默认值」这一步可供比较。
+	sub.applyMovieDefaults(s.app.cfg)
 
 	// 解析「同一个番名目录」：扫追更库根目录，找到同一部番的已有目录就复用它
 	// （哪怕是手动建的、带年份的、写法不一样的），这样第 1/2/3 季才会落进
@@ -255,7 +302,14 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// 这里有磁盘 IO（列一级子目录），量级是几百个条目，不做递归。
 	s.app.mu.Lock()
 	if strings.TrimSpace(sub.DirName) == "" {
-		sub.DirName = s.app.ResolveDirName(&sub)
+		if sub.Movie {
+			// 剧场版在 /media/剧场版 下自成目录，不去追更库里找同名目录：
+			// 那里面是同名 TV 番的目录，复用会让电影混进番剧目录。
+			// DirName 留空 = 用 Title 当目录名（DirNameOf 的兜底行为）。
+			sub.DirName = ""
+		} else {
+			sub.DirName = s.app.ResolveDirName(&sub)
+		}
 	}
 	s.app.mu.Unlock()
 
@@ -265,13 +319,19 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先把 <番名>/Season N 建出来（本机挂载点侧）。
+	// 先把落盘目录建出来（本机挂载点侧）。
 	//
 	// 为什么主动建：qB 收到 savepath 会自己建，但它建完到我们在 cifs 挂载点
 	// 看见之间有延迟，紧接着的 renameFile 可能打到还不存在的目录上。
 	// 另一个更实际的作用：先订第 2 季、后订第 1 季时，第 1 季落地时目录已存在，
 	// 不会出现「同名目录被当成新建」的歧义。
-	if err := s.app.EnsureSeasonDirs(testPath); err != nil {
+	//
+	// 剧场版只建目录本身（/media/剧场版/<番名>），没有 Season 这一层。
+	if sub.Movie {
+		if err := s.app.EnsureMovieDir(testPath); err != nil {
+			s.app.log.Printf("[%s] 建目录失败（交给 qBittorrent 自建）: %v", sub.Title, err)
+		}
+	} else if err := s.app.EnsureSeasonDirs(testPath); err != nil {
 		s.app.log.Printf("[%s] 建目录失败（交给 qBittorrent 自建）: %v", sub.Title, err)
 	}
 
@@ -284,6 +344,11 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := "已添加订阅「" + sub.Title + "」"
+	// 剧场版没有集号，提示语也跟着换词，避免出现「第 1 集」这种误导。
+	epWord := "第 1 集"
+	if sub.Movie {
+		epWord = "剧场版本体"
+	}
 
 	// 订阅成功即后台抓封面（不阻塞这次响应；抓不到也不影响订阅本身）
 	//
@@ -294,7 +359,10 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 首次订阅：立即抓一次 RSS
-	if req.SkipBackfill {
+	//
+	// 剧场版忽略「跳过回填」：剧场版订阅的唯一目的就是把它下下来，
+	// 勾了跳过等于永远不下（剧场版没有"后续新集"可等）。
+	if req.SkipBackfill && !sub.Movie {
 		msg += "，已建基线（不下载历史，等新集）"
 		if body, err := fetchFeed(sub.URL, s.app.cfg.UA); err == nil {
 			if _, items, err2 := ParseFeed(body); err2 == nil && len(items) > 0 {
@@ -328,24 +396,31 @@ func (s *server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		case perr != nil:
 			// 订阅本身已经保存成功了，首推失败不能回滚订阅；
 			// 告诉用户原因即可，剩下的集数后台还会继续试。
-			msg += "，但第 1 集推送失败（" + perr.Error() + "），后台会继续重试"
+			msg += "，但" + epWord + "推送失败（" + perr.Error() + "）"
+			if sub.Movie {
+				msg += "，下次检查会再试一次（成功后即完成）"
+			} else {
+				msg += "，后台会继续重试"
+			}
 			if pending > 0 {
 				msg += fmt.Sprintf("，剩余 %d 集已排队", pending)
 			}
 		case first.OK:
-			msg += "，第 1 集已推送"
-			if pending > 0 {
+			msg += "，" + epWord + "已推送"
+			if sub.Movie {
+				msg += "，剧场版下载完成（不会再有后续更新）"
+			} else if pending > 0 {
 				msg += fmt.Sprintf("，剩余 %d 集后台按顺序推送中", pending)
 			} else {
 				msg += "，RSS 里没有更多待推剧集"
 			}
 		case first.Skipped:
-			msg += "，第 1 集跳过（" + first.Reason + "）"
-			if pending > 0 {
+			msg += "，" + epWord + "跳过（" + first.Reason + "）"
+			if !sub.Movie && pending > 0 {
 				msg += fmt.Sprintf("，剩余 %d 集后台按顺序推送中", pending)
 			}
 		default:
-			msg += "，第 1 集未推送（" + first.Reason + "）"
+			msg += "，" + epWord + "未推送（" + first.Reason + "）"
 		}
 	}
 

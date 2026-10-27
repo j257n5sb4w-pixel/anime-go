@@ -26,7 +26,8 @@ import (
 // 400x560 约 54 KB，和原来 TMDB w500 的体积、比例都接近。
 const mikanCoverSize = "?width=400&height=560"
 
-var mikanCoverClient = &http.Client{Timeout: 25 * time.Second}
+// 走 proxy.go 的共享 Transport：设置里的代理对它即时生效。
+var mikanCoverClient = newHTTPClient(25 * time.Second)
 
 // coverSourceOf 取封面的主来源，默认 mikan。
 func (a *App) coverSourceOf() string {

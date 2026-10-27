@@ -60,7 +60,8 @@ func (f FeedItem) Key() string {
 	return "title:" + f.Title
 }
 
-var httpClient = &http.Client{Timeout: 25 * time.Second}
+// httpClient 走 proxy.go 的共享 Transport：设置里的代理对它即时生效。
+var httpClient = newHTTPClient(25 * time.Second)
 
 func fetchFeed(url, ua string) (string, error) {
 	req, err := http.NewRequest("GET", url, nil)

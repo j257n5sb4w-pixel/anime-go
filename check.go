@@ -230,7 +230,7 @@ func (a *App) initialPushAndQueue(sub *Subscription) (first Result, pending int,
 		first.Reason = "dry_run"
 		a.state.MarkPushedEp(sub.ID, plan[0].ep)
 		a.state.MarkSeen(sub.ID, []string{plan[0].key})
-		a.log.Printf("[%s] [DRY] E%02d（订阅后首推，试运行不实际推送）", sub.Title, plan[0].ep)
+		a.log.Printf("[%s] [DRY] %s（订阅后首推，试运行不实际推送）", sub.Title, epLabel(sub, plan[0].ep))
 	} else {
 		first, err = a.pushOne(sub, plan[0].it, plan[0].ep)
 	}
@@ -239,7 +239,10 @@ func (a *App) initialPushAndQueue(sub *Subscription) (first Result, pending int,
 
 	// 无论首推成败都排队：失败的那条会在后台重新排期时再次被选中，
 	// 而成功的已经 MarkSeen，不会再被推第二遍。
-	if len(plan) > 1 {
+	//
+	// 剧场版例外：一次性任务，首推成功即完成，不排后台队列
+	// （plan 里即使还有别的版本，也不该再下）。
+	if len(plan) > 1 && !sub.NoUpdateNow() {
 		pending = len(plan) - 1
 		if !a.enqueueBackfill(sub.ID) {
 			// 没排进队列就没有 worker 接管 inflight，得自己放掉，
@@ -292,11 +295,14 @@ func (a *App) pushOne(sub *Subscription, it FeedItem, ep int) (Result, error) {
 				if ep > x.MaxEpisode {
 					x.MaxEpisode = ep
 				}
+				if sub.NoUpdateNow() {
+					x.MovieDone = true
+				}
 			})
 			_ = a.state.Save()
 			res.OK = true
 			res.Reason = "已存在于 qBittorrent"
-			a.log.Printf("[%s] E%02d 已存在于 qBittorrent(订阅后补推): %s", sub.Title, ep, rename)
+			a.log.Printf("[%s] %s 已存在于 qBittorrent(订阅后补推): %s", sub.Title, epLabel(sub, ep), rename)
 			return res, nil
 		}
 		res.Reason = err.Error()
@@ -310,10 +316,13 @@ func (a *App) pushOne(sub *Subscription, it FeedItem, ep int) (Result, error) {
 		if ep > x.MaxEpisode {
 			x.MaxEpisode = ep
 		}
+		if sub.NoUpdateNow() {
+			x.MovieDone = true
+		}
 	})
 	_ = a.state.Save()
 	res.OK = true
-	a.log.Printf("[%s] E%02d 已推送(订阅后补推): %s -> %s", sub.Title, ep, rename, savePath)
+	a.log.Printf("[%s] %s 已推送(订阅后补推): %s -> %s", sub.Title, epLabel(sub, ep), rename, savePath)
 	return res, nil
 }
 
@@ -428,12 +437,16 @@ func (a *App) backfillPlan(sub *Subscription, pc pushCfg) ([]backfillItem, error
 			drop = append(drop, key)
 			continue
 		}
-		ep := ExtractEpisode(it.Title, sub.EpPatterns)
-		if ep == 0 && !IsMovie(it.Title) {
-			drop = append(drop, key)
-			continue
+		// 剧场版不做集数识别，ep 恒为 0（见 checkOne 里的同款处理）
+		ep := 0
+		if !sub.Movie {
+			ep = ExtractEpisode(it.Title, sub.EpPatterns)
+			if ep == 0 && !IsMovie(it.Title) {
+				drop = append(drop, key)
+				continue
+			}
 		}
-		if sub.TotalEpisodes > 0 && DisplayEpisode(sub, ep) > sub.TotalEpisodes {
+		if !sub.Movie && sub.TotalEpisodes > 0 && DisplayEpisode(sub, ep) > sub.TotalEpisodes {
 			drop = append(drop, key)
 			continue
 		}
@@ -612,6 +625,18 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 	wasInitialized := st.Initialized
 	a.state.Update(sub.ID, func(x *SubState) { x.LastRun = time.Now() })
 
+	// 剧场版是一次性任务：推成功过就彻底收工，不再每小时抓一遍 RSS
+	// （用户 2026-10-27：剧场版无需后续更新）。
+	//
+	// 放在抓取之前：剧集条目一年可能新增很多个版本，已经下完的电影
+	// 再抓再比对纯属浪费带宽，而且会把新版本悄悄再下一遍。
+	// 想重新下载就在订阅上点「重置状态并重推」——那会清掉整个 SubState，
+	// MovieDone 也随之消失。
+	if sub.NoUpdateNow() && st.MovieDone {
+		a.log.Printf("[%s] 这是一次性订阅，已下载完成，跳过更新检查（如需重下请用「重置状态并重推」）", sub.Title)
+		return nil
+	}
+
 	body, err := fetchFeed(sub.URL, a.cfg.UA)
 	if err != nil {
 		a.state.Update(sub.ID, func(x *SubState) { x.LastError = err.Error() })
@@ -631,7 +656,10 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 	// 首次运行：默认把 RSS 里现存的全部剧集都下载一遍，
 	// 然后进入增量模式（每小时只抓新增集）。
 	// 例外：SkipBackfill=true 时退回"只建基线不推"的旧行为。
-	if !wasInitialized && !force {
+	//
+	// 剧场版不走这套：一次性下载，用户点了订阅就是"现在把它下下来"，
+	// 没有"历史集"的概念，也不需要基线。
+	if !wasInitialized && !force && !sub.NoUpdateNow() {
 		if sub.SkipBackfill {
 			keys := make([]string, 0, len(items))
 			maxEp := 0
@@ -683,11 +711,18 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 			continue
 		}
 
-		ep := ExtractEpisode(it.Title, sub.EpPatterns)
-		if ep == 0 && !IsMovie(it.Title) {
-			newSeen = append(newSeen, key)
-			a.log.Printf("[%s] 无法识别集数，跳过: %s", sub.Title, truncate(it.Title, 70))
-			continue
+		// 剧场版不做集数识别（用户 2026-10-27 明确要求）：
+		// 标题里没有「- 03」这类集号，硬抽只会把「[BDRemux 1080p]」里的
+		// 数字当成集数，或者干脆判"无法识别集数"把整部电影永久丢弃。
+		// ep 恒为 0，下面所有集数相关的判断都跳过。
+		ep := 0
+		if !sub.Movie {
+			ep = ExtractEpisode(it.Title, sub.EpPatterns)
+			if ep == 0 && !IsMovie(it.Title) {
+				newSeen = append(newSeen, key)
+				a.log.Printf("[%s] 无法识别集数，跳过: %s", sub.Title, truncate(it.Title, 70))
+				continue
+			}
 		}
 
 		// 集数上限
@@ -695,7 +730,7 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 		// ⚠ 用偏移后的集号比较：第 2 季从第 13 集开始编号、EpOffset=-12 时，
 		// 原始 13 换算后是本季第 1 集。若拿原始 13 去和「本季 12 集」的上限比，
 		// 整季会被判定超限而全部丢弃。
-		if sub.TotalEpisodes > 0 && DisplayEpisode(sub, ep) > sub.TotalEpisodes {
+		if !sub.Movie && sub.TotalEpisodes > 0 && DisplayEpisode(sub, ep) > sub.TotalEpisodes {
 			newSeen = append(newSeen, key)
 			continue
 		}
@@ -749,8 +784,11 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 			newSeen = append(newSeen, key)
 			// 试运行也记录集数，让输出与真实推送时的去重行为一致
 			a.state.MarkPushedEp(sub.ID, ep)
-			a.log.Printf("[%s] [DRY] E%02d -> %s | %s", sub.Title, ep, savePath, rename)
+			a.log.Printf("[%s] [DRY] %s -> %s | %s", sub.Title, epLabel(sub, ep), savePath, rename)
 			results = append(results, res)
+			if sub.NoUpdateNow() {
+				break // 一次性订阅：试运行也只记一条，与真实行为一致
+			}
 			continue
 		}
 
@@ -769,13 +807,19 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 					if ep > x.MaxEpisode {
 						x.MaxEpisode = ep
 					}
+					if sub.NoUpdateNow() {
+						x.MovieDone = true
+					}
 				})
-				a.log.Printf("[%s] E%02d 已存在于 qBittorrent，跳过: %s", sub.Title, ep, rename)
+				a.log.Printf("[%s] %s 已存在于 qBittorrent，跳过: %s", sub.Title, epLabel(sub, ep), rename)
 				results = append(results, res)
+				if sub.NoUpdateNow() {
+					break // 一次性订阅：只下一个版本
+				}
 				continue
 			}
 			res.Reason = err.Error()
-			a.log.Printf("[%s] E%02d 推送失败: %v", sub.Title, ep, err)
+			a.log.Printf("[%s] %s 推送失败: %v", sub.Title, epLabel(sub, ep), err)
 			results = append(results, res)
 			continue // 不标记 seen，下轮重试
 		}
@@ -789,9 +833,15 @@ func (a *App) checkOne(sub *Subscription, force bool) []Result {
 			if ep > x.MaxEpisode {
 				x.MaxEpisode = ep
 			}
+			if sub.NoUpdateNow() {
+				x.MovieDone = true
+			}
 		})
-		a.log.Printf("[%s] E%02d 已推送: %s -> %s", sub.Title, ep, rename, savePath)
+		a.log.Printf("[%s] %s 已推送: %s -> %s", sub.Title, epLabel(sub, ep), rename, savePath)
 		results = append(results, res)
+		if sub.NoUpdateNow() {
+			break // 一次性订阅：后续候选版本不再入队
+		}
 	}
 
 	if len(newSeen) > 0 {
@@ -866,6 +916,16 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "..."
+}
+
+// epLabel 返回日志里用的集数标签。
+//
+// 剧场版没有集号（ep 恒为 0），日志里写成「剧场版」而不是难看的「E00」。
+func epLabel(sub *Subscription, ep int) string {
+	if sub != nil && (sub.Movie || ep <= 0) {
+		return "剧场版"
+	}
+	return fmt.Sprintf("E%02d", ep)
 }
 
 // titleMatches 用于 /api/preview 里显示匹配判断

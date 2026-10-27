@@ -159,9 +159,16 @@ func TestDefaultSavePathIsAllowed(t *testing.T) {
 	if err := ValidateSavePath(p, DefaultAllowPrefixes()); err != nil {
 		t.Fatalf("默认路径被安全阀拒绝: %s → %v", p, err)
 	}
-	// 但正式库里不归追更管的目录仍然要拒
-	if err := ValidateSavePath("/media/剧场版/某剧场版/Season 1", DefaultAllowPrefixes()); err == nil {
-		t.Error("剧场版目录不应被默认白名单放行")
+	// 2026-10-27 起剧场版有了自己的默认白名单前缀，必须同样被放行
+	msub := &Subscription{Title: "某剧场版", Movie: true}
+	msub.applyDefaults()
+	mp := RenderSavePath(msub, 1)
+	if err := ValidateSavePath(mp, DefaultAllowPrefixes()); err != nil {
+		t.Fatalf("剧场版默认路径被安全阀拒绝: %s → %v", mp, err)
+	}
+	// 但不归这两处管的目录仍然要拒
+	if err := ValidateSavePath("/media/别的库/某番", DefaultAllowPrefixes()); err == nil {
+		t.Error("追更库与剧场版库之外的目录不应被默认白名单放行")
 	}
 }
 

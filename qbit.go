@@ -23,9 +23,10 @@ type Qbit struct {
 
 func NewQbit(cfg QbitConfig, ua string) *Qbit {
 	return &Qbit{
-		cfg:    cfg,
-		ua:     ua,
-		client: &http.Client{Timeout: 30 * time.Second},
+		cfg: cfg,
+		ua:  ua,
+		// 走 proxy.go 的共享 Transport（代理设置对 qB 也生效）。
+		client: newHTTPClient(30 * time.Second),
 	}
 }
 

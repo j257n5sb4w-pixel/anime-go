@@ -41,8 +41,12 @@ type SubEditRequest struct {
 	// 不能把「没传」和「传了 0」混为一谈。
 	EpOffset *int `json:"ep_offset"`
 	// DirName 番名目录名。传空串 = 让程序重新扫磁盘解析。
-	DirName    *string `json:"dir_name"`
-	ResetState bool    `json:"reset_state"`
+	DirName *string `json:"dir_name"`
+	// Movie 是否剧场版订阅。用指针：false 也要能传（把剧场版改回追更）。
+	Movie *bool `json:"movie"`
+	// NoUpdate 推成功一条就不再更新（普通番也能勾；剧场版恒为 true）。
+	NoUpdate   *bool `json:"no_update"`
+	ResetState bool  `json:"reset_state"`
 }
 
 func (s *server) handleSubUpdate(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +122,33 @@ func (s *server) handleSubUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.EpOffset != nil {
 		sub.EpOffset = *req.EpOffset
 	}
+	// 剧场版开关。改它等于换一整套落盘模板（applyDefaults 里按 Movie 展开），
+	// 所以顺手清掉 DirName 让下面重新解析。
+	if req.Movie != nil && *req.Movie != sub.Movie {
+		sub.Movie = *req.Movie
+		sub.DirName = ""
+		// 剧场版/追更互换后，旧的 save_path、重命名模板几乎一定不再适用，
+		// 清成空让 applyDefaults 用新一套默认值（用户想要自定义可以改完再填）。
+		sub.SavePath = ""
+		sub.RenameTemplate = ""
+		if sub.Movie {
+			sub.Season = 1
+			sub.TotalEpisodes = 0
+			sub.EpOffset = 0
+			sub.SkipBackfill = false
+		}
+	}
+	// 「只下一次」开关（剧场版天然包含它，普通番可以单独勾）。
+	// 勾上之后再推成功一条就会停更，见 checkOne 里的 Completed 判断。
+	if req.NoUpdate != nil {
+		sub.NoUpdate = *req.NoUpdate
+	}
+	// 剧场版没有季度/集数概念，改动了也一律归零，避免界面出现「第 2 季」。
+	if sub.Movie {
+		sub.Season = 1
+		sub.TotalEpisodes = 0
+		sub.EpOffset = 0
+	}
 	// 目录名：显式传了就照办（空串 = 重新解析）；
 	// 没传但标题改了 → 跟着重算，否则改完番名还在往老目录里写。
 	titleChanged := req.Title != nil && strings.TrimSpace(*req.Title) != "" && backup.Title != sub.Title
@@ -133,7 +164,8 @@ func (s *server) handleSubUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sub.applyDefaults()
-	if strings.TrimSpace(sub.DirName) == "" {
+	sub.applyMovieDefaults(s.app.cfg)
+	if strings.TrimSpace(sub.DirName) == "" && !sub.Movie {
 		sub.DirName = s.app.ResolveDirName(sub)
 	}
 	testPath := RenderSavePath(sub, 1)

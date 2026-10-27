@@ -73,6 +73,7 @@ func (s *server) Start(addr string) error {
 	mux.HandleFunc("/api/settings", s.requireAuth(s.handleSettingsGet))
 	mux.HandleFunc("/api/settings/save", s.requireAuth(s.handleSettingsSave))
 	mux.HandleFunc("/api/settings/test", s.requireAuth(s.handleSettingsTest))
+	mux.HandleFunc("/api/settings/proxy/test", s.requireAuth(s.handleProxyTest))
 	mux.HandleFunc("/api/status", s.requireAuth(s.handleStatus))
 	mux.HandleFunc("/api/subs", s.requireAuth(s.handleSubs))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
@@ -443,6 +444,10 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"total_ep":  episodeTotalOf(sub),
 			"seen":      len(st.Seen),
 			"recent_ep": recentEpisodeOf(st),
+			// 剧场版：前端据此把集数角标换成「剧场版」角标，
+			// movie_done=true 表示这一部已经下完、之后不会再动。
+			"movie":      sub.Movie,
+			"movie_done": st.MovieDone,
 		})
 	}
 	writeJSON(w, 200, map[string]any{
@@ -498,12 +503,17 @@ func (s *server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	rows := make([]row, 0, len(items))
 	for _, it := range items {
 		ok, reason := titleMatches(s.app.cfg, sub, it.Title)
-		ep := ExtractEpisode(it.Title, sub.EpPatterns)
+		// 剧场版订阅不做集数识别：预览里也按 0 显示，
+		// 免得界面出现「第 01 集」这种和实际落盘不一致的数字。
+		ep := 0
+		if !sub.Movie {
+			ep = ExtractEpisode(it.Title, sub.EpPatterns)
+		}
 		rw := row{
 			Title:   it.Title,
 			Episode: ep,
 			EpOut:   DisplayEpisode(sub, ep),
-			Movie:   IsMovie(it.Title),
+			Movie:   sub.NoUpdateNow() || IsMovie(it.Title),
 			Matched: ok,
 			Reason:  reason,
 			Seen:    s.app.state.HasSeen(sub.ID, it.Key()),
