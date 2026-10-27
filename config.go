@@ -56,9 +56,16 @@ type Subscription struct {
 	// CoverName / CoverYear 是封面对应的中文名与首播年，仅用于界面展示。
 	CoverName string `json:"cover_name"`
 	CoverYear string `json:"cover_year"`
-	// CoverFrom 记封面是从哪来的：mikan / tmdb / url（手动贴的）/ 空（老数据）。
+	// CoverFrom 记封面是从哪来的：mikan / tmdb / bgm / url（手动贴的）/ 空（老数据）。
 	// 老订阅没有这个字段，界面上按「未知来源」处理，不影响展示。
 	CoverFrom string `json:"cover_from"`
+
+	// BangumiID 是匹配到的 bgm.tv 条目 id（0 = 未匹配）。
+	//
+	// 与 TMDBID 并存而不是二选一：两个源各有所长（TMDB 海报好、bgm.tv
+	// 中文名准），用户可能在 UI 里分别指定。指定过的条目会被尊重——
+	// 下次抓取直接用它，不再按名字重搜（否则改一条、后台又搜回原来那条）。
+	BangumiID int `json:"bangumi_id,omitempty"`
 
 	// NameSource 记录订阅名取自哪一侧："" 或 "mikan"（默认，用 mikan 的番名）
 	// 或 "tmdb"（用 TMDB 的中文名）。
@@ -236,6 +243,41 @@ type Config struct {
 	// 影响 RSS、mikan 页面、封面、TMDB、qBittorrent 全部出站请求，
 	// 见 proxy.go 顶部的说明（改完即时生效，不需要重启）。
 	Proxy ProxySettings `json:"proxy"`
+
+	// HostOverrides 是「域名 → IP」的自定义解析表（设置 → 源数据 → 手动 hosts）。
+	//
+	// 为什么不直接改系统 hosts：本程序在板子上由 systemd 托管、在 NAS 上跑容器，
+	// 改 /etc/hosts 要 root、要重启、还要跟着备份走；而 DNS 污染是会变的目标
+	// （今天污染 api.themoviedb.org，明天可能换成 image.tmdb.org），
+	// 能在设置页当场改、改完下一个请求就生效，才是实际用得上的形态。
+	//
+	// 只在程序内部生效（拨号时替换 IP），系统里其它程序不受影响。
+	HostOverrides []HostOverride `json:"host_overrides"`
+
+	// ---- bgm.tv（Bangumi 番组计划）元数据源 ----
+	//
+	// 用户 2026-10-27 要求：TMDB 与 bangumi 合并成「源数据」栏目，
+	// 里面能配 TMDB 的地址/Key，也能配 bangumi 的 API 地址与 Token，
+	// 由它们负责抓中文番名、集数、海报。
+	//
+	// 为什么值得接：TMDB 的简体中文条目覆盖率不如 bgm.tv，
+	// 而 bgm.tv 是中文动漫数据库，季番/剧场版都有独立条目与中文名。
+	BangumiAPI string `json:"bangumi_api"`
+	// BangumiToken 是 bgm.tv 的 Access Token（个人设置 → 开放接口 里申请）。
+	// 搜索与条目查询不强制要 Token，但带上后限流更宽松；留空也能用。
+	BangumiToken string `json:"bangumi_token"`
+	// BangumiEnabled 已废弃，仅为兼容老配置保留：早期要求勾选开关才用 bgm.tv，
+	// 现在只要 BangumiAPI 有值就可用（默认一定有），勾选框已从界面移除。
+	// 字段留着是为了不把用户配置里的旧值打丢（未知字段会被拒绝写回）。
+	BangumiEnabled bool `json:"bangumi_enabled,omitempty"`
+}
+
+// HostOverride 是一条「域名 → IP」的强制解析。
+//
+// IP 可以是 IPv4 也可以是 IPv6（IPv6 不用加方括号，拨号时按需拼）。
+type HostOverride struct {
+	Host string `json:"host"`
+	IP   string `json:"ip"`
 }
 
 // PathMount 描述「qBittorrent 侧的根目录 → 本机挂载点」的一条映射。
@@ -285,6 +327,10 @@ const (
 	defaultMovieRename = "[{{subgroup}}] {{filetitle}}"
 	// 剧场版目录的 allow 前缀。默认白名单里包含它（见 DefaultAllowPrefixes）。
 	defaultMovieAllowPrefix = "/media/剧场版/"
+
+	// bgm.tv 的 API 根地址（设置 → 源数据 → bangumi）。
+	// 走 v0 接口：/v0/search/subjects 搜条目，/v0/subjects/{id} 取详情。
+	defaultBangumiAPI = "https://api.bgm.tv"
 )
 
 // mikanMirrors 是设置页「bangumi 连接」下拉里自带的几个站点。
@@ -545,11 +591,12 @@ func (c *Config) applyDefaults() {
 	}
 
 	// 封面来源默认 mikan：TMDB 多季合一条目只有一张海报，订阅页分不清第几季。
+	// 认这三个值：mikan / tmdb / bgm，其余一律退回 mikan（老配置里没有这个字段）。
 	if strings.TrimSpace(c.CoverSource) == "" {
 		c.CoverSource = "mikan"
 	}
 	c.CoverSource = strings.ToLower(strings.TrimSpace(c.CoverSource))
-	if c.CoverSource != "tmdb" {
+	if c.CoverSource != "tmdb" && c.CoverSource != "bgm" {
 		c.CoverSource = "mikan"
 	}
 
@@ -582,6 +629,16 @@ func (c *Config) applyDefaults() {
 
 	// 代理归一：协议白名单、端口范围、主机去空白/去协议前缀。
 	c.Proxy.normalize()
+
+	// bgm.tv API 地址归一：留空用内置默认，去掉末尾斜杠。
+	c.BangumiAPI = strings.TrimRight(strings.TrimSpace(c.BangumiAPI), "/")
+	if c.BangumiAPI == "" {
+		c.BangumiAPI = defaultBangumiAPI
+	}
+	c.BangumiToken = strings.TrimSpace(c.BangumiToken)
+
+	// hosts 覆盖表归一：丢掉空项/非法 IP，同一个域名只留第一条。
+	c.HostOverrides = normalizeHostOverrides(c.HostOverrides)
 
 	for i := range c.Subscriptions {
 		s := &c.Subscriptions[i]

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.2.1"
+const version = "0.3.0"
 
 func main() {
 	var (
@@ -53,6 +53,19 @@ func main() {
 		app.log.Printf("⚠ 代理配置无效，已按直连运行: %v", err)
 	} else if cfg.Proxy.Enabled {
 		app.log.Printf("出站代理: %s", cfg.Proxy.Describe())
+	}
+
+	// 手动 hosts（域名 → IP）：DNS 被污染时的解法，见 hosts.go 顶部说明。
+	// 必须在任何出站请求之前装好，否则启动期的首次检查还是走坏 DNS。
+	ApplyHostOverrides(cfg.HostOverrides)
+	if n := HostOverridesApplied(); n > 0 {
+		app.log.Printf("手动 hosts: %d 条（%s）", n, describeHostOverrides(cfg.HostOverrides))
+	}
+
+	// bgm.tv 元数据源：只打一行日志说明状态，真正的取舍在每次抓取时判断。
+	if cfg.BangumiEnabled {
+		app.log.Printf("bgm.tv 元数据源已启用: %s（%s）",
+			bangumiAPIOf(cfg), bangumiTokenState(cfg))
 	}
 
 	// -reset：重建基线。必须在服务停止后运行，否则旧进程退出时会回写覆盖。

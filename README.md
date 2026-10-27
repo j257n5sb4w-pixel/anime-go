@@ -21,11 +21,12 @@
 - **订阅管理**：粘贴 mikan RSS 地址即可；支持从 mikan 番剧页搜索、按季度浏览、一键订阅。
 - **集数识别**：内置 20+ 条命名规则的解析器，覆盖 `- 03`、`EP10`、`09v2`、`(ABEMA 1920x1080)` 等真实字幕组写法，并单独识别剧场版（`劇場版` / `映画` / `BDRemux` / `BDMV`）。
 - **剧场版**：从 mikan 当季列表的「剧场版」分档点进来，订阅会自动标成「一次性下载」——不做集数识别、推一次就收工，落到单独的电影目录（默认 `/media/剧场版/<番名>`）。
-- **多站点 / 出站代理**：mikan 站点可选官方主站、备用域名或自定义镜像；抓取与 TMDB 请求可走 HTTP/HTTPS/SOCKS5 代理（支持账号密码），局域网地址自动直连。
+- **多站点 / 出站代理**：mikan 站点可选官方主站、备用域名或自定义镜像；抓取、TMDB、bgm.tv 请求可走 HTTP/HTTPS/SOCKS5 代理（支持账号密码），局域网地址自动直连。
 - **过滤规则**：`match` / `exclude` 正则，支持全局默认规则 + 单订阅覆盖，换季不用逐番改。
 - **路径与命名模板**：`save_path` / `rename_template` 支持变量替换，多季自动落进同一个番名目录、各自建 `Season N`。
 - **去重与基线**：按「订阅 + 集号」记账，已推过的集数不会重复推送；首次订阅可选「只建基线不回溯」。
-- **封面**：mikan 逐季封面（默认）或 TMDB 中文名 + 海报，二选一。
+- **元数据源**：mikan 封面（默认）、TMDB 中文名 + 海报、bgm.tv（Bangumi 番组计划）中文名 + 海报，三选一且失败自动互相兜底；抓不到封面不影响推送下载。
+- **手动 hosts**：程序内 hosts 覆盖（不写系统文件），用来绕 DNS 污染，修改即时生效。
 - **任务视图**：查 qBittorrent 里的任务进度，按订阅筛出「已推送 / 缺失 / 异常」。
 - **文件视图**：把 qB 侧路径映射到本机挂载点，列出订阅目录下实际落盘的文件。
 - **清理**：删除订阅时可连带删除其磁盘目录，带路径白名单与集数锚定匹配，尽量不误伤。
@@ -110,18 +111,21 @@ sudo systemctl enable --now anime-go
 | `dry_run` | `false` | 全局试运行开关，`-dry` 会覆盖它 |
 | `state_file` | `state.json` | 运行状态：已推送集数、基线 |
 | `log_file` | `anime-go.log` | 日志文件 |
-| `mikan_host` | `https://mikanime.tv` | bangumi（mikan）站点地址，可填任意镜像 |
+| `mikan_host` | `https://mikanime.tv` | mikan 站点地址（抓番剧页/订阅源），可填任意镜像 |
 | `movie_save_path` | `/media/剧场版/{{dirname}}` | 剧场版落盘目录模板 |
 | `movie_rename` | `[{{subgroup}}] {{filetitle}}` | 剧场版文件名模板（不含 SxxExx） |
 | `proxy` | 关闭 | 出站代理，见下方「出站代理」 |
 | `tmdb_key` | 空 | TMDB v3 API Key，留空则不抓 TMDB 封面 |
 | `tmdb_host` | `https://api.tmdb.org` | TMDB API 域名 |
+| `bangumi_api` | `https://api.bgm.tv` | bgm.tv（Bangumi 番组计划）API 地址 |
+| `bangumi_token` | 空 | bgm.tv Access Token，可选，填了限流更宽松 |
+| `host_overrides` | `[]` | 程序内 hosts 覆盖，见下方「源数据」 |
 | `library_root` | `/media/新番追更` | 追更库根目录（qB 侧路径），用于解析同名番名目录 |
 | `allow_write_prefixes` | `["/media/新番追更/", "/media/剧场版/"]` | 允许写入的路径前缀白名单，**必须带尾斜杠** |
 | `mounts` | `[{qbit:/media, local:/mnt/media}]` | qB 侧路径 → 本机挂载点，支持多条，最长前缀优先 |
 | `session_ttl_minutes` | `120` | 登录有效期；`-1` 永久，`0` 关浏览器即失效 |
 | `default_match` / `default_exclude` | `1080p+`、排除 `720p` 与 `合集` | 全局默认过滤规则 |
-| `cover_source` | `mikan` | 封面主来源：`mikan` 或 `tmdb` |
+| `cover_source` | `mikan` | 封面主来源：`mikan` / `tmdb` / `bgm` |
 
 ### qBittorrent
 
@@ -199,15 +203,40 @@ sudo systemctl enable --now anime-go
 ```
 
 - `protocol` 支持 `http` / `https` / `socks5`；`username`/`password` 留空表示免认证。
-- 生效范围：mikan（RSS / 番剧页 / 封面）、TMDB，**不含 qBittorrent**（它通常就在内网，没必要绕）。
+- 生效范围：mikan（RSS / 番剧页 / 封面）、TMDB、bgm.tv，**不含 qBittorrent**（它通常就在内网，没必要绕）。
 - 目标地址是局域网（`127.0.0.1` / `10.` / `172.16-31.` / `192.168.` / `.local`）时自动直连，
   所以开了代理也不会把 qB、NAS 的请求绕出去。
 - Web UI 的「设置 → 代理」可以改这些值并一键「测试代理」（会真的走一次 mikan 请求）。
 
+### 源数据：TMDB / bgm.tv / 手动 hosts
+
+番名、集数、海报这些元数据有三个可选来源（mikan / TMDB / bgm.tv），都在「设置 → 源数据」里配：
+
+```json
+"tmdb_key": "",
+"tmdb_host": "https://api.tmdb.org",
+"bangumi_api": "https://api.bgm.tv",
+"bangumi_token": "",
+"cover_source": "mikan",
+"host_overrides": [
+  {"host": "api.bgm.tv", "ip": "203.0.113.10"}
+]
+```
+
+- `cover_source`：`mikan`（从番剧页直接扒，最省事）/ `tmdb` / `bgm`。选 `bgm` 时先查 bgm.tv 拿中文名与海报，
+  查不到再退回 mikan。前两者失败都会自动互相兜底，不会因为抓不到封面就不推送。
+- `bangumi_api` / `bangumi_token`：bgm.tv 的 API 地址与可选 Access Token。**留空不填 Token 也能用**
+  （匿名限流更紧一点）；TMDB 与 bgm 是并列的两个来源，不是二选一。
+- `host_overrides`：程序内的 hosts 覆盖，用来绕开 DNS 污染——只影响本进程发出的请求，
+  不写 `/etc/hosts`、不改系统解析。设置页里有「测试」按钮，会同时显示系统 DNS 解析结果、
+  你配的覆盖 IP、实际连上的地址和耗时。修改后立即生效，无需重启。
+- 注意：bgm.tv 在部分网络环境下被 DNS 污染，**典型用法是「源数据 → 手动 hosts」配好正确 IP，
+  或「代理 → 开启出站代理」二选一**；TMDB 同理。
+
 
 ## Web UI
 
-设置页分五个分栏：**下载**（qB 连接、挂载映射、追更/剧场版目录）、**抓取**（检查间隔、bangumi 站点、写入白名单）、**TMDB**（Key 与封面来源）、**代理**（协议/地址/端口/账号密码 + 连通性测试）、**登录**（账号、API Key、会话有效期）。
+设置页分五个分栏：**下载**（qB 连接、挂载映射、追更/剧场版目录）、**抓取**（检查间隔、mikan 站点、写入白名单）、**源数据**（TMDB 的 Key/域名与封面来源、bgm.tv 的 API 地址与 Token、手动 hosts）、**代理**（协议/地址/端口/账号密码 + 连通性测试）、**登录**（账号、API Key、会话有效期）。
 
 | 页面 | 作用 |
 |---|---|
@@ -216,7 +245,7 @@ sudo systemctl enable --now anime-go
 | 番剧库 | 从 mikan 搜索 / 按季度浏览，一键订阅并抓封面 |
 | 任务 | qBittorrent 任务进度，按订阅过滤 |
 | 文件 | 按挂载映射列出订阅目录下实际落盘的文件 |
-| 设置 | qB 连接、TMDB、过滤规则、挂载、会话有效期、账号与 API Key |
+| 设置 | qB 连接、源数据、过滤规则、挂载、代理、会话有效期、账号与 API Key |
 | 日志 | 最近日志 |
 
 接口一览（除 `/setup`、`/login` 外全部需要会话或 API Key）：
@@ -228,6 +257,7 @@ GET  /api/subs  /api/home  /api/status  /api/logs  /api/downloads
 POST /api/parse  /api/subscribe  /api/sub/get  /api/sub/update  /api/sub/delete
 GET  /api/sub/tasks  /api/sub/files  /api/subs/audit     POST /api/sub/reset  /api/sub/cover
 GET  /api/settings           POST /api/settings/save  /api/settings/test
+POST /api/settings/proxy/test  /api/settings/bangumi/test  /api/settings/hosts/test
 POST /api/check  /api/preview
 GET  /api/mikan/search  /api/mikan/bangumi  /api/mikan/season
 GET  /api/cover  /api/tmdb/search  /api/tmdb/match   POST /api/covers/refresh
@@ -258,7 +288,7 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:7788/api/subs
 
 ```
 .
-├── *.go                    源码（37 个 .go，其中 11 个是测试）
+├── *.go                    源码（42 个 .go，其中 13 个是测试）
 ├── go.mod
 ├── config.example.json     配置样例（不含任何真实凭据）
 ├── deploy/
@@ -289,7 +319,7 @@ go vet ./...
 go test ./...
 ```
 
-代码组织大致按职责分文件：`feed.go`（RSS）、`match.go`（过滤）、`mikan.go`（站点抓取）、`tmdb.go`（封面）、`render.go`（模板唯一出口）、`safety.go`（路径白名单）、`qbit.go`（下载器）、`state.go`（状态）、`check.go`（一轮检查的主流程）、`web.go` + `ui*.go`（HTTP 与页面）、`cleanup.go` + `match_tasks.go`（删除与任务匹配）。
+代码组织大致按职责分文件：`feed.go`（RSS）、`match.go`（过滤）、`mikan.go`（站点抓取）、`tmdb.go`（封面与 TMDB 元数据）、`bangumi.go`（bgm.tv 元数据）、`hosts.go`（程序内 hosts 覆盖）、`render.go`（模板唯一出口）、`safety.go`（路径白名单）、`qbit.go`（下载器）、`state.go`（状态）、`check.go`（一轮检查的主流程）、`web.go` + `ui*.go`（HTTP 与页面）、`cleanup.go` + `match_tasks.go`（删除与任务匹配）、`proxy.go`（出站代理）。
 
 有两条硬规矩是从踩坑里换来的：
 

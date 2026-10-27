@@ -10,7 +10,10 @@
   "movie_rename": "[{{subgroup}}] {{filetitle}}",
   "tmdb_key": "",
   "tmdb_host": "https://api.tmdb.org",
+  "bangumi_api": "https://api.bgm.tv",
+  "bangumi_token": "",
   "cover_source": "mikan",
+  "host_overrides": [],
   "proxy": {
     "enabled": false,
     "protocol": "http",

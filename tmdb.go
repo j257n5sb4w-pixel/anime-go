@@ -397,12 +397,13 @@ func downloadCover(posterPath, destPath string, size string) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return 0, fmt.Errorf("创建封面目录失败: %w", err)
 	}
-	// 先写临时文件再 rename，避免半截文件被浏览器缓存
-	tmp := destPath + ".part"
-	f, err := os.Create(tmp)
+	// 同 covers_mikan.go 的 downloadImageURL：临时文件名必须唯一，
+	// 否则并发的两次抓图会抢同一个 ".part"。
+	f, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+".*.part")
 	if err != nil {
 		return 0, err
 	}
+	tmp := f.Name()
 	n, copyErr := io.Copy(f, io.LimitReader(resp.Body, 8<<20))
 	closeErr := f.Close()
 	if copyErr != nil || closeErr != nil {
@@ -436,6 +437,19 @@ func (a *App) FetchCover(sub *Subscription) (string, error) {
 	if a.coverSourceOf() == "tmdb" {
 		return a.fetchCoverTMDB(sub)
 	}
+	if a.coverSourceOf() == "bgm" {
+		// 用户显式选了 bgm.tv 就直接用它，不再先试 mikan
+		// （选了就是明确的偏好，先试别的反而慢一圈）。
+		msg, err := a.fetchCoverBangumi(sub)
+		if err == nil {
+			return msg, nil
+		}
+		// 失败才退到 mikan —— 至少有张图比空封面强。
+		if msg2, err2 := a.fetchCoverMikan(sub); err2 == nil {
+			return msg2, nil
+		}
+		return "", err
+	}
 	msg, err := a.fetchCoverMikan(sub)
 	if err != nil {
 		// mikan 拿不到就退回 TMDB，别让用户面对一张空封面。
@@ -444,10 +458,78 @@ func (a *App) FetchCover(sub *Subscription) (string, error) {
 				return msg2, nil
 			}
 		}
+		// TMDB 也不行（没 Key / 没条目 / 没海报）时，最后问一次 bgm.tv。
+		// 用户 2026-10-27 要求把 bangumi 当作并列的元数据源，
+		// 它的价值正在这里：TMDB 没有中文条目时 bgm.tv 往往有。
+		if bangumiUsable(a.cfg) {
+			if msg3, err3 := a.fetchCoverBangumi(sub); err3 == nil {
+				return msg3, nil
+			}
+		}
 		return "", err
 	}
 	a.fillEpTotalFromTMDB(sub)
 	return msg, nil
+}
+
+// fetchCoverBangumi 用 bgm.tv 的条目海报当封面。
+//
+// 与 TMDB 那条路的区别：
+//   - bgm.tv 的 eps 是「该条目总集数」，对多季番它就是整部番的集数
+//     （例如两季的番 eps=24），所以这里**不直接拿它填 EpTotal**——
+//     那正是历史上把 12 写成 24 的那个坑。只在第 1 季（以及单季番）
+//     才采用，判断在 fillEpTotalFromBangumi 里。
+//   - 海报地址是完整的 CDN URL，走 downloadImageURL 而不是 downloadCover。
+func (a *App) fetchCoverBangumi(sub *Subscription) (string, error) {
+	if sub == nil {
+		return "", fmt.Errorf("订阅为空")
+	}
+	if !bangumiUsable(a.cfg) {
+		return "", fmt.Errorf("bgm.tv 数据源未启用")
+	}
+	var best *BangumiSubject
+	// 用户指定过 bgm.tv 条目时优先用它（下次再抓也认这一条）。
+	if sub.BangumiID > 0 {
+		if d, err := BangumiDetail(a.cfg, sub.BangumiID); err == nil && d != nil {
+			best = d
+		}
+	}
+	if best == nil {
+		b, err := BangumiMatch(a.cfg, sub.Title, sub.Season)
+		if err != nil {
+			return "", err
+		}
+		best = b
+	}
+	poster := best.PosterURL()
+	if poster == "" {
+		// 没海报也要把条目 id / 中文名记下来：用户在 UI 里能改，
+		// 而且中文名对「番名对不上」这件事本身就是有用的信息。
+		sub.BangumiID = best.ID
+		if n := best.DisplayName(); n != "" {
+			sub.CoverName = n
+		}
+		return "", fmt.Errorf("「%s」在 bgm.tv 上没有海报", best.DisplayName())
+	}
+	path := a.coverPath(sub.ID)
+	n, err := downloadImageURL(poster, path, a.cfg.UA)
+	if err != nil {
+		return "", err
+	}
+	sub.BangumiID = best.ID
+	sub.Cover = filepath.Base(path)
+	if n2 := best.DisplayName(); n2 != "" {
+		sub.CoverName = n2
+	}
+	if y := firstAirYear(best.Date); y != "" && sub.CoverYear == "" {
+		sub.CoverYear = y
+	}
+	sub.CoverFrom = "bgm"
+	// 封面拿到了，顺手补总集数（角标「已有/总数」要用）。
+	// fillEpTotalFromTMDB 内部会先试 TMDB，没 Key 或没结果时才问 bgm.tv，
+	// 并且只在第 1 季采用 bgm 的 eps（多季番的 eps 是全季合计）。
+	a.fillEpTotalFromTMDB(sub)
+	return fmt.Sprintf("封面已更新：%s（bgm.tv，%d KB）", sub.CoverName, n/1024), nil
 }
 
 // fetchCoverTMDB 是原来的 TMDB 取海报逻辑。

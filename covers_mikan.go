@@ -30,13 +30,19 @@ const mikanCoverSize = "?width=400&height=560"
 var mikanCoverClient = newHTTPClient(25 * time.Second)
 
 // coverSourceOf 取封面的主来源，默认 mikan。
+//
+// 三个来源的取舍：
+//   - mikan：逐季条目，一季一张海报。默认。
+//   - tmdb：海报分辨率高、剧场版条目全；多季共用一张总海报。
+//   - bgm ：bgm.tv 的条目海报，中文名最准，图通常比 TMDB 小一档。
 func (a *App) coverSourceOf() string {
 	src := ""
 	if a != nil && a.cfg != nil {
 		src = strings.ToLower(strings.TrimSpace(a.cfg.CoverSource))
 	}
-	if src == "tmdb" {
-		return "tmdb"
+	switch src {
+	case "tmdb", "bgm":
+		return src
 	}
 	return "mikan"
 }
@@ -54,8 +60,11 @@ func coverFetchable(a *App) bool {
 	if a == nil || a.cfg == nil {
 		return false
 	}
-	if a.coverSourceOf() == "tmdb" && tmdbKeyOf(a.cfg) == "" {
-		return false
+	switch a.coverSourceOf() {
+	case "tmdb":
+		return tmdbKeyOf(a.cfg) != ""
+	case "bgm":
+		return bangumiUsable(a.cfg)
 	}
 	return true
 }
@@ -103,11 +112,14 @@ func downloadImageURL(u, destPath string, ua string) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return 0, fmt.Errorf("创建封面目录失败: %w", err)
 	}
-	tmp := destPath + ".part"
-	f, err := os.Create(tmp)
+	// 临时文件必须每次唯一：启动补抓、手动「补抓全部」、订阅后首推
+	// 都可能在同一个订阅上同时抓图，固定 ".part" 会互相覆盖，
+	// 后到者 rename 时发现文件已被别人挪走，就报 no such file。
+	f, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+".*.part")
 	if err != nil {
 		return 0, err
 	}
+	tmp := f.Name()
 	n, copyErr := io.Copy(f, io.LimitReader(resp.Body, 8<<20))
 	closeErr := f.Close()
 	if copyErr != nil || closeErr != nil {
@@ -175,8 +187,14 @@ func (a *App) fetchCoverMikan(sub *Subscription) (string, error) {
 // （幼女战记 24）写进了单季的 EpTotal，必须能自愈回 12。
 // 只有拿到有效值（>0）才覆盖，拿不到就保留原值，避免把手填的上限擦掉。
 func (a *App) fillEpTotalFromTMDB(sub *Subscription) bool {
-	if sub == nil || tmdbKeyOf(a.cfg) == "" {
-		return sub != nil && sub.EpTotal > 0
+	if sub == nil {
+		return false
+	}
+	// TMDB 没配 Key 时，直接看 bgm.tv 能不能补。
+	// 注意两者语义不同：bgm.tv 的 eps 是**整部番**的集数，
+	// 所以只在「单季」时采用；多季番用它会重演「12 写成 24」的老 bug。
+	if tmdbKeyOf(a.cfg) == "" {
+		return a.fillEpTotalFromBangumi(sub)
 	}
 	var best *TMDBResult
 	if sub.TMDBID > 0 {
@@ -191,12 +209,13 @@ func (a *App) fillEpTotalFromTMDB(sub *Subscription) bool {
 		}
 		results, err := TMDBSearchTV(a.cfg, query)
 		if err != nil || len(results) == 0 {
-			return sub.EpTotal > 0
+			// TMDB 搜不到就退 bgm.tv（中文条目覆盖率更高，正补这个缺口）
+			return a.fillEpTotalFromBangumi(sub)
 		}
 		best = TMDBPickBest(results, sub.Title, sub.Season)
 	}
 	if best == nil {
-		return sub.EpTotal > 0
+		return a.fillEpTotalFromBangumi(sub)
 	}
 	// 搜索结果里没有 seasons[]，补一次详情才能按季取集数；
 	// 否则多季番只能退回全季合计，又会把 12 写成 24。
@@ -214,6 +233,51 @@ func (a *App) fillEpTotalFromTMDB(sub *Subscription) bool {
 	if sub.CoverYear == "" {
 		sub.CoverYear = firstAirYear(best.FirstAirDate)
 	}
+	if sub.EpTotal > 0 {
+		return true
+	}
+	// TMDB 有这条但没给该季集数（老剧集常见 episodes 为空）时，再问一次 bgm.tv。
+	return a.fillEpTotalFromBangumi(sub)
+}
+
+// fillEpTotalFromBangumi 用 bgm.tv 补总集数。
+//
+// ⚠ 只对第 1 季采用 —— bgm.tv 的 eps 是「整个条目」的集数，
+// 对多季番它是全季合计（两季的番 eps=24）。把它写进第 2 季的 EpTotal
+// 就会重演历史 bug（幼女战记显示「4 / 24」）。
+//
+// 那为什么不干脆全都不用？因为「只追第 1 季」和「单季番」是最常见的
+// 两种情况，此时 bgm.tv 的 eps 就是对的，而 TMDB 常常连条目都没有中文名。
+// 第 2 季以上宁可不填（角标只显示已有集数）也不填错。
+func (a *App) fillEpTotalFromBangumi(sub *Subscription) bool {
+	if sub == nil || !bangumiUsable(a.cfg) {
+		return sub != nil && sub.EpTotal > 0
+	}
+	if sub.Season > 1 {
+		return sub.EpTotal > 0
+	}
+	var best *BangumiSubject
+	if sub.BangumiID > 0 {
+		if d, err := BangumiDetail(a.cfg, sub.BangumiID); err == nil && d != nil {
+			best = d
+		}
+	}
+	if best == nil {
+		b, err := BangumiMatch(a.cfg, sub.Title, sub.Season)
+		if err != nil || b == nil {
+			return sub.EpTotal > 0
+		}
+		best = b
+	}
+	if best.ID > 0 && sub.BangumiID <= 0 {
+		sub.BangumiID = best.ID
+	}
+	if best.Eps > 0 {
+		sub.EpTotal = best.Eps
+	}
+	if sub.CoverYear == "" {
+		sub.CoverYear = firstAirYear(best.Date)
+	}
 	return sub.EpTotal > 0
 }
 
@@ -227,7 +291,8 @@ func (a *App) fillEpTotalFromTMDB(sub *Subscription) bool {
 func (a *App) fillMissingEpTotals() {
 	a.mu.Lock()
 	targets := make([]Subscription, 0, len(a.cfg.Subscriptions))
-	if tmdbKeyOf(a.cfg) != "" {
+	// 只要 TMDB 或 bgm.tv 有一个能用就值得跑一轮（两者互为兜底）。
+	if tmdbKeyOf(a.cfg) != "" || bangumiUsable(a.cfg) {
 		for i := range a.cfg.Subscriptions {
 			s := a.cfg.Subscriptions[i]
 			// 用户手填了上限就尊重它，不再覆盖
@@ -248,6 +313,7 @@ func (a *App) fillMissingEpTotals() {
 			if cur := a.cfg.FindSub(sub.ID); cur != nil {
 				cur.EpTotal = sub.EpTotal
 				cur.TMDBID = sub.TMDBID
+				cur.BangumiID = sub.BangumiID
 				if cur.CoverYear == "" {
 					cur.CoverYear = sub.CoverYear
 				}

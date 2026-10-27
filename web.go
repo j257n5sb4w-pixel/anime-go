@@ -74,6 +74,9 @@ func (s *server) Start(addr string) error {
 	mux.HandleFunc("/api/settings/save", s.requireAuth(s.handleSettingsSave))
 	mux.HandleFunc("/api/settings/test", s.requireAuth(s.handleSettingsTest))
 	mux.HandleFunc("/api/settings/proxy/test", s.requireAuth(s.handleProxyTest))
+	// 源数据：bgm.tv 与手动 hosts 的「先测再存」端点
+	mux.HandleFunc("/api/settings/bangumi/test", s.requireAuth(s.handleBangumiTest))
+	mux.HandleFunc("/api/settings/hosts/test", s.requireAuth(s.handleHostTest))
 	mux.HandleFunc("/api/status", s.requireAuth(s.handleStatus))
 	mux.HandleFunc("/api/subs", s.requireAuth(s.handleSubs))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))

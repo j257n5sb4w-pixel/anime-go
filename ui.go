@@ -632,11 +632,11 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
   <h1>设置</h1>
   <div class="sub">qBittorrent 连接等全局参数</div>
 
-  <!-- 二级菜单：下载 / 抓取 / TMDB / 代理 / 登录 -->
+  <!-- 二级菜单：下载 / 抓取 / 源数据 / 代理 / 登录 -->
   <div class="tabbar">
     <button class="tab on" data-tab="dl" onclick="setTab('dl')">下载</button>
     <button class="tab" data-tab="fetch" onclick="setTab('fetch')">抓取</button>
-    <button class="tab" data-tab="tmdb" onclick="setTab('tmdb')">TMDB</button>
+    <button class="tab" data-tab="source" onclick="setTab('source')">源数据</button>
     <button class="tab" data-tab="proxy" onclick="setTab('proxy')">代理</button>
     <button class="tab" data-tab="auth" onclick="setTab('auth')">登录</button>
   </div>
@@ -686,9 +686,11 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
       <select id="s_coversrc">
         <option value="mikan">mikan（推荐：每一季各一张海报）</option>
         <option value="tmdb">TMDB（多季共用一张总海报）</option>
+        <option value="bgm">bangumi / bgm.tv（中文名最准）</option>
       </select>
       <div class="hint" id="s_coversrc_hint">
         mikan 是逐季建条目的，第 1 季和第 2 季的封面不一样；TMDB 把多季合成一个剧集条目，只有一张总海报，订阅页上看起来会一模一样。
+        选 bangumi 会走 bgm.tv 的条目海报，图通常小一档，但中文番名最准。
       </div>
       <div class="row" style="margin-top:14px">
         <button onclick="saveSettings()" id="btnSetSave2">保存设置</button>
@@ -752,13 +754,14 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
       <label>允许写入的路径前缀（一行一条）</label>
       <textarea id="s_prefixes" style="min-height:60px" placeholder="/media/新番追更/"></textarea>
       <div class="hint">安全阀：订阅的保存路径必须落在这里面，否则拒绝推送。追更目录默认已放行。</div>
-      <label style="margin-top:12px">bangumi 连接</label>
+      <label style="margin-top:12px">mikan 站点（抓番剧页）</label>
       <select id="s_mikanhost" onchange="mkHostChanged()"></select>
       <input type="text" id="s_mikanhost_custom" style="margin-top:8px;display:none" placeholder="https://mikanime.tv">
       <div class="hint" id="s_mikanhost_hint">
-        抓订阅、搜番、下封面都走这个站点。默认 <code>https://mikanime.tv</code>；
-        镜像站的页面结构和番剧 id 与主站一致，可以随时切换，切完建议点一次「立即检查」。
-        选「自定义」时填完整地址（含 https://）。
+        这里选的是<strong>从哪个站抓番剧页</strong>（订阅源本身），不是元数据源——
+        TMDB / bangumi 的中文名、集数、海报在「源数据」那一栏配。
+        默认 <code>https://mikanime.tv</code>；镜像站的页面结构和番剧 id 与主站一致，
+        可以随时切换，切完建议点一次「立即检查」。选「自定义」时填完整地址（含 https://）。
       </div>
       <div class="row" style="margin-top:14px">
         <button onclick="saveSettings()">保存设置</button>
@@ -772,17 +775,20 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
     </div>
   </div>
 
-  <!-- ---------- TMDB ---------- -->
-  <div class="tabpane" id="tab-tmdb" style="display:none">
+  <!-- ---------- 源数据（TMDB + bangumi + hosts） ---------- -->
+  <div class="tabpane" id="tab-source" style="display:none">
     <div class="card">
-      <h2>TMDB 封面</h2>
+      <h2>TMDB</h2>
+      <div class="hint" style="margin-bottom:10px">
+        海报分辨率高、剧场版条目全，是封面与总集数的主来源。
+      </div>
       <label>API Key（v3）</label>
       <input type="text" id="s_tmdbkey" placeholder="留空则不修改；填 - 清空" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">
       <div class="hint" id="s_tmdbkey_hint">当前：—</div>
       <label style="margin-top:12px">API 域名</label>
       <input type="text" id="s_tmdbhost" placeholder="https://api.tmdb.org">
       <div class="hint">国内网络 <code>api.themoviedb.org</code> 常被污染，默认走 <code>api.tmdb.org</code>；
-        图片走 <code>image.tmdb.org</code>，一般正常。</div>
+        图片走 <code>image.tmdb.org</code>，一般正常。仍不通时用下面的「手动 hosts」把域名直接指到 IP。</div>
       <div class="hint" id="s_cvcount">已缓存封面：—</div>
       <div class="row" style="margin-top:14px">
         <button class="ghost" onclick="testTMDB()" id="btnTestTmdb">测试 TMDB</button>
@@ -790,6 +796,48 @@ pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:aut
         <button onclick="saveSettings()">保存设置</button>
       </div>
       <div id="tmdbResult" class="hint" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>bangumi（bgm.tv）</h2>
+      <div class="hint" style="margin-bottom:10px">
+        Bangumi 番组计划是中文动漫数据库，<strong>中文番名比 TMDB 准</strong>，季番/剧场版都有独立条目。
+        填好下面的地址就能用（默认值已经填好），不需要额外的开关：
+        当 TMDB 找不到条目或没海报时，程序会再问一次 bgm.tv 补上。
+        Token 不填也能用（公开接口），填了限流更宽松。
+      </div>
+      <label>API 地址</label>
+      <input type="text" id="s_bgm_api" placeholder="https://api.bgm.tv">
+      <div class="hint" id="s_bgm_api_hint">默认 <code>https://api.bgm.tv</code>，一般不需要改。</div>
+      <label style="margin-top:12px">Access Token（可选）</label>
+      <input type="text" id="s_bgm_token" autocomplete="off" placeholder="留空则不修改；填 - 清空"
+             style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">
+      <div class="hint" id="s_bgm_token_hint">当前：—。在 bgm.tv → 个人设置 → 开放接口 申请。</div>
+      <div class="row" style="margin-top:14px">
+        <button class="ghost" onclick="testBangumi()" id="btnTestBgm">测试 bangumi</button>
+        <button onclick="saveSettings()">保存设置</button>
+      </div>
+      <div id="bgmResult" class="hint" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>手动 hosts（域名 → IP）</h2>
+      <div class="hint" style="margin-bottom:10px">
+        DNS 被污染时用：填「域名 IP」，程序内直接连这个 IP，<strong>不改系统 hosts、不用重启</strong>。
+        TLS 证书仍按域名校验，所以填真 IP 才有用。局域网地址与代理规则不受影响。
+      </div>
+      <label>覆盖表（一行一条，格式：域名 IP）</label>
+      <textarea id="s_hosts" style="min-height:84px"
+                placeholder="api.themoviedb.org 18.164.52.121&#10;image.tmdb.org 18.164.52.121"></textarea>
+      <div class="hint" id="s_hosts_hint">当前生效：—</div>
+      <div class="row" style="margin-top:12px">
+        <input type="text" id="s_host_test" placeholder="要测的域名，如 api.themoviedb.org" style="flex:1">
+        <button class="ghost" onclick="testHost()" id="btnTestHost">测试解析与连通</button>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button onclick="saveSettings()">保存设置</button>
+      </div>
+      <div id="hostResult" class="hint" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -2487,7 +2535,7 @@ async function loadSettings(){
       : '留空 = 不启用，删除订阅时会保留文件夹。';
     // 追更库根目录
     $('s_library').value = s.library_root || '/media/新番追更';
-    if($('s_coversrc')) $('s_coversrc').value = (s.cover_source === 'tmdb') ? 'tmdb' : 'mikan';
+    if($('s_coversrc')) $('s_coversrc').value = (['tmdb','bgm'].indexOf(s.cover_source)>=0) ? s.cover_source : 'mikan';
     // 全局默认过滤规则
     $('s_match').value = (s.default_match||[]).join('\n');
     $('s_exclude').value = (s.default_exclude||[]).join('\n');
@@ -2499,8 +2547,25 @@ async function loadSettings(){
     window.__movieSaveDef = s.movie_default_save_path || '/media/剧场版/{{dirname}}';
     $('s_movie_rename_hint').innerHTML = '默认不带季集（<code>'+esc(s.movie_default_rename||'')+
       '</code>）。填了 SxxExx 之类的变量在这里没有意义，但不会报错。';
-    // bangumi 连接
+    // bangumi 连接 → 改名为 mikan 站点（用户 2026-10-27 指出这里一直是 mikan）
     mkHostFill(s.mikan_host, s.mikan_hosts||[]);
+    // 源数据：bgm.tv
+    if($('s_bgm_api')) $('s_bgm_api').value = s.bangumi_api || 'https://api.bgm.tv';
+    if($('s_bgm_token')){
+      $('s_bgm_token').value = '';
+      $('s_bgm_token').placeholder = s.bangumi_token_set ? '已设置，留空则不修改；填 - 清空' : '未设置（公开接口也能用，限流更严）';
+      $('s_bgm_token_hint').textContent = s.bangumi_token_set
+        ? ('当前：'+s.bangumi_token) : '当前：未设置。在 bgm.tv → 个人设置 → 开放接口 申请。';
+    }
+    // 源数据：手动 hosts
+    if($('s_hosts')){
+      const ho = Array.isArray(s.host_overrides) ? s.host_overrides : [];
+      $('s_hosts').value = ho.map(h=>h.host+' '+h.ip).join('\n');
+      const n = s.host_overrides_applied || 0;
+      $('s_hosts_hint').textContent = n > 0
+        ? ('当前生效：'+n+' 条'+(ho.length?('（'+ho.map(h=>h.host+' → '+h.ip).join('，')+'）'):''))
+        : '当前生效：无（全部走系统 DNS）';
+    }
     // 代理
     const px = s.proxy || {};
     $('s_proxy_on').checked = !!px.enabled;
@@ -2523,7 +2588,7 @@ async function loadSettings(){
 }
 
 // ============ 设置页二级菜单 ============
-const TABS = ['dl','fetch','tmdb','proxy','auth'];
+const TABS = ['dl','fetch','source','proxy','auth'];
 function setTab(name){
   if(TABS.indexOf(name)<0) name='dl';
   TABS.forEach(t=>{
@@ -2696,6 +2761,48 @@ async function testTMDB(){
   finally{ $('btnTestTmdb').disabled=false; $('btnTestTmdb').textContent='测试 TMDB'; }
 }
 
+// 测试 bgm.tv：把表单里还没保存的 API/Token 一起带上去，支持「先测再存」
+async function testBangumi(){
+  const btn = $('btnTestBgm'), box = $('bgmResult');
+  btn.disabled = true; btn.textContent='测试中…';
+  try{
+    const body = {
+      bangumi_api: $('s_bgm_api') ? $('s_bgm_api').value.trim() : '',
+      bangumi_token: $('s_bgm_token') ? $('s_bgm_token').value.trim() : ''
+    };
+    const d = await (await apiPost('/api/settings/bangumi/test', body)).json();
+    if(d.ok){
+      box.innerHTML = '<span class="ok">✓ '+esc(d.message||'可用')+'</span>';
+    } else {
+      box.innerHTML = '<span class="err">✗ '+esc(d.error||'测试失败')+'</span>';
+    }
+  }catch(e){ box.innerHTML = '<span class="err">出错：'+esc(String(e))+'</span>'; }
+  finally{ btn.disabled=false; btn.textContent='测试 bangumi'; }
+}
+
+// 测试一个域名：同时显示系统 DNS 给出的地址与覆盖后的连通结果，
+// 这样「DNS 有没有被污染、覆盖有没有救回来」一眼能看出来。
+async function testHost(){
+  const btn = $('btnTestHost'), box = $('hostResult');
+  const host = ($('s_host_test') ? $('s_host_test').value : '').trim();
+  if(!host){ box.innerHTML = '<span class="err">请先填要测的域名</span>'; return; }
+  btn.disabled = true; btn.textContent='测试中…';
+  try{
+    const d = await (await apiPost('/api/settings/hosts/test', {host: host})).json();
+    const dns = (d.dns||[]).length ? d.dns.join(', ') : '（解析失败）';
+    if(d.ok){
+      box.innerHTML = '<span class="ok">✓ '+esc(host)+' 连通 '+esc(d.connected||'')+
+        '（'+d.latency_ms+' ms）</span><br><span style="color:#999">系统 DNS：'+esc(dns)+
+        (d.override ? ('　覆盖：'+esc(d.override)) : '　覆盖：无（走 DNS）')+'</span>';
+    } else {
+      box.innerHTML = '<span class="err">✗ '+esc(host)+'：'+esc(d.error||'连不上')+'</span><br>'+
+        '<span style="color:#999">系统 DNS：'+esc(dns)+
+        (d.override ? ('　覆盖：'+esc(d.override)) : '　覆盖：无（可在上面加一条再测）')+'</span>';
+    }
+  }catch(e){ box.innerHTML = '<span class="err">出错：'+esc(String(e))+'</span>'; }
+  finally{ btn.disabled=false; btn.textContent='测试解析与连通'; }
+}
+
 // ============ bangumi 连接（镜像站选择） ============
 // 候选值由后端 /api/settings 的 mikan_hosts 提供，这里只负责渲染，
 // 避免域名列表在前后端各维护一份、写着写着就不一致。
@@ -2787,7 +2894,7 @@ async function testProxy(){
 function settingsResultBox(){
   let tab = 'dl';
   try{ tab = localStorage.getItem('ag_settab') || 'dl'; }catch(e){}
-  if(tab === 'tmdb') return $('tmdbResult');
+  if(tab === 'source') return $('srcResult') || $('tmdbResult');
   if(tab === 'fetch') return $('fetchResult');
   if(tab === 'proxy') return $('proxyResult');
   return $('setResult');
@@ -2822,8 +2929,19 @@ async function saveSettings(){
       // 剧场版默认落盘
       movie_save_path: $('s_movie_save').value.trim(),
       movie_rename: $('s_movie_rename').value.trim(),
-      // bangumi 连接：选「自定义」时用输入框里的地址
+      // mikan 站点：选「自定义」时用输入框里的地址
       mikan_host: mkHostValue(),
+      // 源数据：bgm.tv
+      bangumi_api: $('s_bgm_api') ? $('s_bgm_api').value.trim() : '',
+      bangumi_token: $('s_bgm_token') ? $('s_bgm_token').value.trim() : '',
+      // 源数据：手动 hosts（一行一条「域名 IP」）
+      host_overrides: ($('s_hosts') ? $('s_hosts').value.split('\n') : []).map(line=>{
+        const s = line.trim();
+        if(!s) return null;
+        // 空格或制表符都当分隔符；也容错「域名=IP」的写法
+        const m = s.match(/^(\S+?)\s*[=\s]\s*(\S+)$/);
+        return m ? {host: m[1].trim(), ip: m[2].trim()} : null;
+      }).filter(Boolean),
       // 代理
       proxy_enabled: $('s_proxy_on').checked,
       proxy_protocol: $('s_proxy_proto').value,
@@ -2838,6 +2956,7 @@ async function saveSettings(){
       $('s_apikey').value = '';
       $('s_tmdbkey').value = '';
       $('s_proxy_pass').value = '';
+      if($('s_bgm_token')) $('s_bgm_token').value = '';
       loadSettings();
     } else {
       box.innerHTML = '<span class="err">✗ '+esc(d.error)+'</span>';

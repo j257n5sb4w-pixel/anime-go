@@ -932,8 +932,14 @@ func truncate(s string, n int) string {
 //
 // 剧场版没有集号（ep 恒为 0），日志里写成「剧场版」而不是难看的「E00」。
 func epLabel(sub *Subscription, ep int) string {
-	if sub != nil && (sub.Movie || ep <= 0) {
+	// 只有**订阅本身**是剧场版时才叫「剧场版」。
+	// ep<=0 只是「没认出集号」，普通订阅里这种情况多半是 RSS 标题格式怪，
+	// 早先顺手把 ep<=0 也算成剧场版，结果普通番的日志全变成「剧场版」。
+	if sub != nil && sub.Movie {
 		return "剧场版"
+	}
+	if ep <= 0 {
+		return "未知集"
 	}
 	return fmt.Sprintf("E%02d", ep)
 }

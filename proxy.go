@@ -20,6 +20,7 @@ package main
 // 保存设置时还会主动 CloseIdleConnections，让切换立即生效。
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -168,16 +169,26 @@ func isLocalHost(host string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
+// sharedDialer 是共享的拨号器。
+//
+// 单独提出来是为了让 hosts 覆盖（hosts.go）能包在它外面：
+// 覆盖只改写「拨号目标地址」，超时/KeepAlive 等参数仍由这里决定。
+var sharedDialer = &net.Dialer{
+	Timeout:   15 * time.Second,
+	KeepAlive: 30 * time.Second,
+}
+
 // sharedTransport 是所有出站请求共用的 Transport。
 //
 // 与默认 Transport 的区别只在于 Proxy 是动态的：其余参数照抄
 // http.DefaultTransport 的量级，避免「换了 Transport 反而变慢/不复用连接」。
 var sharedTransport = &http.Transport{
 	Proxy: proxyForRequest,
-	DialContext: (&net.Dialer{
-		Timeout:   15 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
+	// 拨号走 dialWithOverrides：设置 → 源数据里填的「域名 → IP」
+	// 在这里生效（DNS 被污染时不必改系统 hosts）。
+	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialWithOverrides(sharedDialer, ctx, network, addr)
+	},
 	ForceAttemptHTTP2:     true,
 	MaxIdleConns:          32,
 	MaxIdleConnsPerHost:   4,

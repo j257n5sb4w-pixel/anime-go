@@ -41,13 +41,25 @@ type SettingsPayload struct {
 	IntervalMinutes *int    `json:"interval_minutes"`
 	UA              *string `json:"ua"`
 
-	// MikanHost 是番剧搜索/番剧页的站点地址（bangumi 连接选择）。
-	// 前端给几个常用镜像 + 一个自定义输入框；留空 = 用内置默认。
+	// MikanHost 是番剧搜索/番剧页的站点地址。
+	// 【注意】这个字段不是 bangumi 元数据源，只是「从哪个站点抓番剧页」。
+	// 历史上它被误标成「bangumi 连接」，用户 2026-10-27 指出后
+	// 前端的标题已改成「mikan 站点」，字段名保留是为了不破坏老配置。
 	MikanHost *string `json:"mikan_host"`
 
 	// TMDB 封面
 	TMDBKey  *string `json:"tmdb_key"`
 	TMDBHost *string `json:"tmdb_host"`
+
+	// ---- 源数据：bgm.tv（Bangumi 番组计划）----
+	// 与 TMDB 并列的第二个元数据源，补中文番名/集数/海报。
+	BangumiAPI     *string `json:"bangumi_api"`
+	BangumiToken   *string `json:"bangumi_token"`
+	BangumiEnabled *bool   `json:"bangumi_enabled"`
+
+	// ---- 源数据：手动 hosts（域名 → IP）----
+	// DNS 被污染时用，只在程序内生效（见 hosts.go 顶部说明）。
+	HostOverrides *[]HostOverride `json:"host_overrides"`
 
 	// 安全
 	AllowWritePrefixes *[]string `json:"allow_write_prefixes"`
@@ -107,13 +119,23 @@ func (s *server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 			"interval_minutes": cfg.IntervalMinutes,
 			"ua":               cfg.UA,
 			"mikan_host":       cfg.MikanHost,
-			// bangumi 连接下拉框的候选值（前端直接渲染，避免两边各写一份）
+			// mikan 站点下拉框的候选值（前端直接渲染，避免两边各写一份）
 			"mikan_hosts": mikanHostPresets(),
 
 			"tmdb_key":     maskKey(cfg.TMDBKey),
 			"tmdb_key_set": cfg.TMDBKey != "",
 			"tmdb_host":    cfg.TMDBHost,
 			"covers_count": s.app.countCovers(),
+
+			// ---- 源数据：bgm.tv ----
+			"bangumi_api":         cfg.BangumiAPI,
+			"bangumi_token":       maskKey(cfg.BangumiToken),
+			"bangumi_token_set":   cfg.BangumiToken != "",
+			"bangumi_default_api": defaultBangumiAPI,
+
+			// ---- 源数据：手动 hosts ----
+			"host_overrides":         cfg.HostOverrides,
+			"host_overrides_applied": HostOverridesApplied(),
 
 			"allow_write_prefixes": cfg.AllowWritePrefixes,
 			"downloads_mount":      cfg.DownloadsMount,
@@ -323,15 +345,16 @@ func (s *server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ---- 封面来源 ----
-	// mikan 逐季建条目、一季一张海报；TMDB 多季合一条目只有一张总海报。
+	// mikan 逐季建条目、一季一张海报；TMDB 多季合一条目只有一张总海报；
+	// bgm 用 bgm.tv 的条目海报（中文名最准）。
 	if req.CoverSource != nil {
 		v := strings.ToLower(strings.TrimSpace(*req.CoverSource))
-		if v != "mikan" && v != "tmdb" {
+		if v != "mikan" && v != "tmdb" && v != "bgm" {
 			*cfg = backup
 			s.app.mu.Unlock()
 			writeJSON(w, 400, map[string]any{
 				"ok":    false,
-				"error": "封面来源只能是 mikan 或 tmdb",
+				"error": "封面来源只能是 mikan、tmdb 或 bgm",
 			})
 			return
 		}
@@ -339,9 +362,64 @@ func (s *server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		changed = append(changed, "封面来源")
 	}
 
-	// ---- bangumi 连接（mikan 站点地址） ----
+	// ---- 源数据：bgm.tv（Bangumi 番组计划）----
 	//
-	// 用户 2026-10-27 要求：设置里能选 bangumi 镜像站，也能自己填一个。
+	// 用户 2026-10-27 要求：TMDB 与 bangumi 合并成「源数据」栏目，
+	// 里面能配 bgm.tv 的 API 地址与 Token。
+	// Token 的约定与 TMDB Key 一致：空 = 不修改，"-" = 清空。
+	if req.BangumiAPI != nil {
+		v := strings.TrimRight(strings.TrimSpace(*req.BangumiAPI), "/")
+		if v != "" {
+			u, err := url.Parse(v)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				*cfg = backup
+				s.app.mu.Unlock()
+				writeJSON(w, 400, map[string]any{
+					"ok":    false,
+					"error": "bgm.tv API 地址必须是完整的 http(s) 地址，例如 https://api.bgm.tv",
+				})
+				return
+			}
+		}
+		cfg.BangumiAPI = v
+		changed = append(changed, "bgm.tv API 地址")
+	}
+	if req.BangumiToken != nil {
+		v := strings.TrimSpace(*req.BangumiToken)
+		switch {
+		case v == "-":
+			cfg.BangumiToken = ""
+			changed = append(changed, "bgm.tv Token（已清空）")
+		case v != "":
+			cfg.BangumiToken = v
+			changed = append(changed, "bgm.tv Token")
+		}
+	}
+	if req.BangumiEnabled != nil {
+		// 兼容老客户端：字段还能传，但已经不影响行为了（见 config.go 里该字段的说明）。
+		// 不记进 changed，避免出现「启用 bgm.tv」这种其实什么也没改的提示。
+		cfg.BangumiEnabled = *req.BangumiEnabled
+	}
+
+	// ---- 源数据：手动 hosts ----
+	//
+	// 保存前严格校验（hosts.go 的 validateHostOverrides 会给中文逐条报错），
+	// 而 normalizeHostOverrides 只是静默兜底——两者都要，
+	// 否则用户写错一个 IP 只能靠「怎么还是连不上」猜。
+	if req.HostOverrides != nil {
+		if err := validateHostOverrides(*req.HostOverrides); err != nil {
+			*cfg = backup
+			s.app.mu.Unlock()
+			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		cfg.HostOverrides = *req.HostOverrides
+		changed = append(changed, "手动 hosts")
+	}
+
+	// ---- mikan 站点（从哪个站抓番剧页，不是元数据源） ----
+	//
+	// 用户 2026-10-27 要求：设置里能选 mikan 镜像站，也能自己填一个。
 	// 这里只校验「是不是一个完整的 http(s) 地址」，不做连通性测试
 	// （mikan 站点偶发抽风，强制测通会让人没法保存）。
 	if req.MikanHost != nil {
@@ -353,7 +431,7 @@ func (s *server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.MikanHost = v
-		changed = append(changed, "bangumi 站点")
+		changed = append(changed, "mikan 站点")
 	}
 
 	// ---- 剧场版落盘模板 ----
@@ -483,6 +561,13 @@ func (s *server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		s.app.log.Printf("出站代理已生效: %s", cfg.Proxy.Describe())
 	} else {
 		s.app.log.Printf("出站代理已关闭（直连）")
+	}
+
+	// hosts 覆盖热生效：换表后主动断开空闲连接，
+	// 否则旧连接还连着旧 IP，用户会以为「改了没生效」。
+	ApplyHostOverrides(cfg.HostOverrides)
+	if n := HostOverridesApplied(); n > 0 {
+		s.app.log.Printf("手动 hosts 已生效: %d 条（%s）", n, describeHostOverrides(cfg.HostOverrides))
 	}
 
 	// 登录有效期热生效。
@@ -744,4 +829,100 @@ func proxyTestText(r ProxyTestResult) string {
 		return "失败：" + r.Error
 	}
 	return fmt.Sprintf("HTTP %d", r.Status)
+}
+
+// handleBangumiTest 测试 bgm.tv（API 地址 + Token）是否可用（不保存设置）。
+//
+// 用当前配置为底、把表单里的字段盖上去，方便「先测再存」。
+func (s *server) handleBangumiTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]any{"ok": false, "error": "只接受 POST"})
+		return
+	}
+	var req struct {
+		BangumiAPI   *string `json:"bangumi_api"`
+		BangumiToken *string `json:"bangumi_token"`
+		Keyword      *string `json:"keyword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "请求体解析失败: " + err.Error()})
+		return
+	}
+
+	// 复制一份配置来测，绝不改全局 cfg
+	tmp := *s.app.cfg
+	if req.BangumiAPI != nil && strings.TrimSpace(*req.BangumiAPI) != "" {
+		tmp.BangumiAPI = strings.TrimRight(strings.TrimSpace(*req.BangumiAPI), "/")
+	}
+	if req.BangumiToken != nil {
+		switch v := strings.TrimSpace(*req.BangumiToken); v {
+		case "-":
+			tmp.BangumiToken = ""
+		case "":
+			// 空 = 沿用已保存的
+		default:
+			tmp.BangumiToken = v
+		}
+	}
+
+	kw := ""
+	if req.Keyword != nil {
+		kw = *req.Keyword
+	}
+	msg, err := TestBangumi(&tmp, kw)
+	if err != nil {
+		s.app.log.Printf("bgm.tv 测试失败（%s）：%v", bangumiAPIOf(&tmp), err)
+		writeJSON(w, 200, map[string]any{
+			"ok":    false,
+			"api":   bangumiAPIOf(&tmp),
+			"error": err.Error(),
+		})
+		return
+	}
+	s.app.log.Printf("bgm.tv 测试成功（%s）：%s", bangumiAPIOf(&tmp), msg)
+	writeJSON(w, 200, map[string]any{
+		"ok":      true,
+		"api":     bangumiAPIOf(&tmp),
+		"message": msg,
+	})
+}
+
+// handleHostTest 测试某个域名的连通性，并回报系统 DNS 与覆盖的差异（不保存设置）。
+func (s *server) handleHostTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]any{"ok": false, "error": "只接受 POST"})
+		return
+	}
+	var req struct {
+		Host   *string `json:"host"`
+		Port   *int    `json:"port"`
+		Scheme *string `json:"scheme"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "请求体解析失败: " + err.Error()})
+		return
+	}
+	host := ""
+	if req.Host != nil {
+		host = *req.Host
+	}
+	port := 0
+	if req.Port != nil {
+		port = *req.Port
+	}
+	scheme := "https"
+	if req.Scheme != nil && strings.TrimSpace(*req.Scheme) != "" {
+		scheme = strings.ToLower(strings.TrimSpace(*req.Scheme))
+	}
+	res := TestHost(host, port, scheme)
+	s.app.log.Printf("hosts 测试 %s:%d → %s", res.Host, res.Port, hostTestText(res))
+	writeJSON(w, 200, res)
+}
+
+// hostTestText 把 hosts 测试结果说成人话。
+func hostTestText(r HostTestResult) string {
+	if r.Error != "" {
+		return "失败：" + r.Error
+	}
+	return fmt.Sprintf("连通 %s（%d ms）", r.Connected, r.LatencyMS)
 }
