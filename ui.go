@@ -45,7 +45,7 @@ h1{font-size:19px;margin:0 0 3px;font-weight:600}
 /* ===== 卡片与表单 ===== */
 .card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .card h2{font-size:14.5px;margin:0 0 12px;color:#444;font-weight:600;border-left:3px solid #4a7cff;padding-left:8px}
-input[type=text],input[type=url],input[type=number],select,textarea{width:100%;padding:9px 10px;border:1px solid #dcdfe6;border-radius:6px;font-size:14.5px;font-family:inherit;background:#fff}
+input[type=text],input[type=url],input[type=number],input[type=password],input:not([type]),select,textarea{width:100%;padding:9px 10px;border:1px solid #dcdfe6;border-radius:6px;font-size:14.5px;font-family:inherit;background:#fff}
 textarea{min-height:60px;resize:vertical;font-size:13px;line-height:1.5}
 input:focus,select:focus,textarea:focus{outline:none;border-color:#4a7cff}
 button{padding:8px 14px;border:0;border-radius:6px;background:#4a7cff;color:#fff;font-size:14px;cursor:pointer;font-family:inherit;white-space:nowrap}
